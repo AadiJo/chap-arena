@@ -13,10 +13,13 @@ Apply. Chap Arena configures the access point with one SSID per occupied station
 one VLAN and DHCP pool per occupied station. Leave a station blank to bypass it: no SSID is
 broadcast and no VLAN is created for it, exactly as Cheesy Arena treats a bypassed station.
 
+Each station can also carry its own WPA key, for a team whose radio is already flashed with one.
+Leave the key blank and the station uses the shared key from the settings page.
+
 **Settings** holds the field hardware configuration: the access point address, password and channel,
-the switch address and password, and the WPA key. Unlike Cheesy Arena, which generates a distinct
-random key per team, every station here shares one key that you choose, so it can be handed out once
-and left alone.
+the switch address and password, and the shared WPA key. Unlike Cheesy Arena, which generates a
+distinct random key per team, stations here default to one key that you choose, so it can be handed
+out once and left alone.
 
 The station assignment is persisted, so restarting the server re-applies the last configuration.
 
@@ -41,8 +44,13 @@ go build
 
 Then open `http://localhost:8080`. Pass `-port` to serve somewhere else.
 
-The server reads and writes `./event.db` relative to the working directory, and loads `templates/`
-and `static/` the same way, so run it from the directory holding those files.
+`templates/` and `static/` are loaded relative to the working directory, so run the binary from the
+directory holding them.
+
+The database defaults to `./event.db`. You can point it somewhere else from the settings page, which
+records the choice in `chap-arena.json` next to the binary, or per run with `-db`. Keeping several
+database files is a reasonable way to keep separate field profiles; switching loads the new file's
+settings but doesn't push anything to the hardware until you press Apply.
 
 Set an admin password on the settings page to require a login. Leaving it blank disables
 authentication, which is reasonable on an isolated field network and not much else, since the page

@@ -6,21 +6,30 @@ package main
 import (
 	"flag"
 	"github.com/AadiJo/chap-arena/field"
+	"github.com/AadiJo/chap-arena/model"
 	"github.com/AadiJo/chap-arena/web"
 	"log"
 )
 
-const eventDbPath = "./event.db"
-
 // Main entry point for the application.
 func main() {
 	httpPort := flag.Int("port", 8080, "Port to serve the web interface on")
+	dbPath := flag.String("db", "", "Database file to open, overriding the one recorded in "+model.BootstrapFileName)
 	flag.Parse()
 
-	arenaField, err := field.NewField(eventDbPath)
+	if *dbPath == "" {
+		bootstrap, err := model.LoadBootstrap()
+		if err != nil {
+			log.Fatalln("Error reading "+model.BootstrapFileName+": ", err)
+		}
+		*dbPath = bootstrap.DatabasePath
+	}
+
+	arenaField, err := field.NewField(*dbPath)
 	if err != nil {
 		log.Fatalln("Error during startup: ", err)
 	}
+	log.Printf("Using database %s", arenaField.DatabasePath())
 
 	// Start monitoring the access point and re-apply the last saved station assignment.
 	arenaField.Run()

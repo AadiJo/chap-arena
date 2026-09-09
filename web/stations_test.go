@@ -24,6 +24,27 @@ func TestStationsApply(t *testing.T) {
 	assert.NotContains(t, body, `value="0"`)
 }
 
+func TestStationsApplyPerStationWpaKeyOverride(t *testing.T) {
+	web := setupTestWeb(t)
+	web.field.Settings.RadioEnabled = true
+	web.field.Settings.TeamWpaKey = "chapsrule"
+
+	recorder := web.postHttpResponse("/apply", "red1=254&red1Key=ownkey12345&red2=1678&red2Key=")
+	assert.Equal(t, 303, recorder.Code)
+	assert.Equal(t, "ownkey12345", web.field.Settings.Red1WpaKey)
+	assert.Equal(t, "", web.field.Settings.Red2WpaKey)
+
+	// The override comes back on the page; a station on the shared key stays blank.
+	body := web.getHttpResponse("/").Body.String()
+	assert.Contains(t, body, `value="ownkey12345"`)
+	assert.Contains(t, body, `name="red2Key" placeholder="shared"`)
+
+	// A too-short override is rejected and names the station.
+	recorder = web.postHttpResponse("/apply", "red1=254&red1Key=short")
+	assert.Equal(t, 200, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "Red 1: the WPA key must be 8-63 characters")
+}
+
 func TestStationsApplyInvalidInput(t *testing.T) {
 	web := setupTestWeb(t)
 

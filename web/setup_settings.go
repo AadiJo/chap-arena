@@ -15,6 +15,7 @@ import (
 
 type settingsPageView struct {
 	pageView
+	DatabasePath  string
 	ErrorMessage  string
 	StatusMessage string
 }
@@ -31,6 +32,20 @@ func (web *Web) settingsGetHandler(w http.ResponseWriter, r *http.Request) {
 func (web *Web) settingsPostHandler(w http.ResponseWriter, r *http.Request) {
 	if !web.userIsAdmin(w, r) {
 		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		web.renderSettings(w, err.Error(), "")
+		return
+	}
+
+	// Switching databases has to happen first, since everything below edits whichever database ends
+	// up being the live one. A submission that omits the field entirely leaves the database alone.
+	if databasePath, ok := r.PostForm["databasePath"]; ok {
+		if err := web.field.SetDatabasePath(databasePath[0]); err != nil {
+			web.renderSettings(w, err.Error(), "")
+			return
+		}
 	}
 
 	// Mutate a copy so that a rejected submission leaves the live settings untouched.
@@ -91,6 +106,7 @@ func (web *Web) renderSettings(w http.ResponseWriter, errorMessage, statusMessag
 
 	data := settingsPageView{
 		pageView:      pageView{EventSettings: web.field.Settings, Page: "settings"},
+		DatabasePath:  web.field.DatabasePath(),
 		ErrorMessage:  errorMessage,
 		StatusMessage: statusMessage,
 	}

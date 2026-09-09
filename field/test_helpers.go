@@ -15,7 +15,9 @@ import (
 // applying a station assignment doesn't try to reach the network.
 func SetupTestField(t *testing.T) *Field {
 	model.BaseDir = ".."
-	field, err := NewField(filepath.Join(t.TempDir(), "test.db"))
+	dir := t.TempDir()
+	model.BootstrapDir = dir
+	field, err := NewField(filepath.Join(dir, "test.db"))
 	assert.Nil(t, err)
 	t.Cleanup(
 		func() {

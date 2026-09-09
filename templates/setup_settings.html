@@ -19,12 +19,19 @@ Field hardware addresses, credentials, and the WPA key shared by every team radi
   <div class="row"><span class="k">Password</span><input class="text" type="text" name="apPassword" value="{{.ApPassword}}"></div>
   <div class="row"><span class="k">Channel</span><input class="text" type="number" name="apChannel" value="{{.ApChannel}}"></div>
   <div class="row"><span class="k">WPA key</span><input class="text" type="text" name="teamWpaKey" value="{{.TeamWpaKey}}" minlength="8" maxlength="63"></div>
-  <p class="hint">Every station uses this one key. 8 to 63 characters.</p>
+  <p class="hint">The default for every station, 8 to 63 characters. Individual stations can override
+    it on the station page.</p>
 
   <div class="sechead">Team ethernet</div>
   <div class="row"><span class="k">Configure</span><label class="check"><input type="checkbox" name="switchEnabled" {{if .SwitchEnabled}}checked{{end}}> Push VLANs to the switch</label></div>
   <div class="row"><span class="k">Address</span><input class="text" type="text" name="switchAddress" value="{{.SwitchAddress}}"></div>
   <div class="row"><span class="k">Password</span><input class="text" type="text" name="switchPassword" value="{{.SwitchPassword}}"></div>
+
+  <div class="sechead">Storage</div>
+  <div class="row"><span class="k">Database</span><input class="text" type="text" name="databasePath" value="{{.DatabasePath}}"></div>
+  <p class="hint">Where settings and the station assignment are stored. Changing this switches to that
+    file, creating it if it doesn't exist, and records the choice in chap-arena.json. The new file has
+    its own settings, and nothing is pushed to the hardware until you press Apply.</p>
 
   <div class="sechead">Access</div>
   <div class="row"><span class="k">Admin password</span><input class="text" type="text" name="adminPassword" value="{{.AdminPassword}}"></div>

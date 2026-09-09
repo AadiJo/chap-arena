@@ -30,3 +30,6 @@ _testmain.go
 
 # Published UI mocks
 *_mocks.html
+
+# Records which database file to open
+chap-arena.json

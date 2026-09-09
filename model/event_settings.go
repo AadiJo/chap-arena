@@ -23,8 +23,8 @@ type EventSettings struct {
 	ApPassword   string
 	ApChannel    int
 
-	// The WPA key handed to every team radio. Cheesy Arena generates a distinct key per team; at an
-	// at-home field a single shared key is far easier to distribute.
+	// The WPA key handed to every team radio that doesn't override it. Cheesy Arena generates a
+	// distinct key per team; at an at-home field a single shared key is far easier to distribute.
 	TeamWpaKey string
 
 	// Team ethernet: a Cisco Catalyst 3500-series switch reached over Telnet.
@@ -40,6 +40,15 @@ type EventSettings struct {
 	Blue1TeamId int
 	Blue2TeamId int
 	Blue3TeamId int
+
+	// Per-station override of TeamWpaKey, for a team whose radio is already flashed with a key of
+	// its own. Blank means the station uses the shared key.
+	Red1WpaKey  string
+	Red2WpaKey  string
+	Red3WpaKey  string
+	Blue1WpaKey string
+	Blue2WpaKey string
+	Blue3WpaKey string
 
 	// Guards the web interface. Blank disables authentication entirely.
 	AdminPassword string
@@ -66,6 +75,29 @@ func (settings *EventSettings) SetStationTeamIds(teamIds [6]int) {
 	settings.Blue1TeamId = teamIds[3]
 	settings.Blue2TeamId = teamIds[4]
 	settings.Blue3TeamId = teamIds[5]
+}
+
+// Returns the six per-station WPA key overrides in alliance station order. A blank entry means the
+// station falls back to the shared key.
+func (settings *EventSettings) StationWpaKeys() [6]string {
+	return [6]string{
+		settings.Red1WpaKey,
+		settings.Red2WpaKey,
+		settings.Red3WpaKey,
+		settings.Blue1WpaKey,
+		settings.Blue2WpaKey,
+		settings.Blue3WpaKey,
+	}
+}
+
+// Overwrites the six per-station WPA key overrides from an array in alliance station order.
+func (settings *EventSettings) SetStationWpaKeys(wpaKeys [6]string) {
+	settings.Red1WpaKey = wpaKeys[0]
+	settings.Red2WpaKey = wpaKeys[1]
+	settings.Red3WpaKey = wpaKeys[2]
+	settings.Blue1WpaKey = wpaKeys[3]
+	settings.Blue2WpaKey = wpaKeys[4]
+	settings.Blue3WpaKey = wpaKeys[5]
 }
 
 func (database *Database) GetEventSettings() (*EventSettings, error) {

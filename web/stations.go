@@ -11,6 +11,7 @@ import (
 	"github.com/AadiJo/chap-arena/field"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // One row of the station configuration form.
@@ -19,6 +20,7 @@ type stationView struct {
 	Name     string
 	Alliance string
 	TeamId   int
+	WpaKey   string
 }
 
 // Everything the station page needs to render.
@@ -57,7 +59,7 @@ func (web *Web) stationsGetHandler(w http.ResponseWriter, r *http.Request) {
 	if !web.userIsAdmin(w, r) {
 		return
 	}
-	web.renderStations(w, web.field.Settings.StationTeamIds(), "")
+	web.renderStations(w, web.field.Assignments(), "")
 }
 
 // Validates and applies the submitted station assignment.
@@ -66,8 +68,10 @@ func (web *Web) stationsApplyPostHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var teamIds [6]int
+	var assignments [6]field.Assignment
 	for i, key := range field.StationKeys {
+		assignments[i].WpaKey = strings.TrimSpace(r.PostFormValue(key + "Key"))
+
 		value := r.PostFormValue(key)
 		if value == "" {
 			continue
@@ -75,15 +79,15 @@ func (web *Web) stationsApplyPostHandler(w http.ResponseWriter, r *http.Request)
 		teamId, err := strconv.Atoi(value)
 		if err != nil {
 			web.renderStations(
-				w, teamIds, fmt.Sprintf("%s: %q is not a team number.", field.StationNames[i], value),
+				w, assignments, fmt.Sprintf("%s: %q is not a team number.", field.StationNames[i], value),
 			)
 			return
 		}
-		teamIds[i] = teamId
+		assignments[i].TeamId = teamId
 	}
 
-	if err := web.field.Apply(teamIds); err != nil {
-		web.renderStations(w, teamIds, err.Error())
+	if err := web.field.Apply(assignments); err != nil {
+		web.renderStations(w, assignments, err.Error())
 		return
 	}
 	http.Redirect(w, r, "/", 303)
@@ -125,7 +129,7 @@ func (web *Web) statusApiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (web *Web) renderStations(w http.ResponseWriter, teamIds [6]int, errorMessage string) {
+func (web *Web) renderStations(w http.ResponseWriter, assignments [6]field.Assignment, errorMessage string) {
 	template, err := web.parseFiles("templates/stations.html", "templates/base.html")
 	if err != nil {
 		handleWebErr(w, err)
@@ -145,7 +149,8 @@ func (web *Web) renderStations(w http.ResponseWriter, teamIds [6]int, errorMessa
 			Key:      field.StationKeys[i],
 			Name:     field.StationNames[i],
 			Alliance: alliance,
-			TeamId:   teamIds[i],
+			TeamId:   assignments[i].TeamId,
+			WpaKey:   assignments[i].WpaKey,
 		}
 	}
 
