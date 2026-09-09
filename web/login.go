@@ -49,9 +49,9 @@ func (web *Web) renderLogin(w http.ResponseWriter, r *http.Request, errorMessage
 		return
 	}
 	data := struct {
-		*model.EventSettings
+		pageView
 		ErrorMessage string
-	}{web.field.Settings, errorMessage}
+	}{pageView{EventSettings: web.field.Settings, Page: "login"}, errorMessage}
 	err = template.ExecuteTemplate(w, "base", data)
 	if err != nil {
 		handleWebErr(w, err)

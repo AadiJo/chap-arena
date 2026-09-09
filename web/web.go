@@ -20,6 +20,13 @@ const (
 	adminUser          = "admin"
 )
 
+// Fields shared by every page template: the settings the top bar renders from, and which nav link to
+// mark as active.
+type pageView struct {
+	*model.EventSettings
+	Page string
+}
+
 type Web struct {
 	field           *field.Field
 	templateHelpers template.FuncMap

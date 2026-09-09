@@ -14,7 +14,7 @@ import (
 )
 
 type settingsPageView struct {
-	*model.EventSettings
+	pageView
 	ErrorMessage  string
 	StatusMessage string
 }
@@ -90,7 +90,7 @@ func (web *Web) renderSettings(w http.ResponseWriter, errorMessage, statusMessag
 	}
 
 	data := settingsPageView{
-		EventSettings: web.field.Settings,
+		pageView:      pageView{EventSettings: web.field.Settings, Page: "settings"},
 		ErrorMessage:  errorMessage,
 		StatusMessage: statusMessage,
 	}

@@ -8,6 +8,7 @@ Base template used by every page to include common resources and render the top 
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <meta charset="utf-8">
     <title>{{template "title" .}} - {{.EventSettings.Name}} - Chap Arena</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="shortcut icon" href="/static/img/favicon.ico">
@@ -15,10 +16,10 @@ Base template used by every page to include common resources and render the top 
   </head>
   <body>
     <nav>
-      <a class="brand" href="/">Chap Arena</a>
-      <a href="/">Stations</a>
-      <a href="/setup/settings">Settings</a>
-      <span class="event-name">{{.EventSettings.Name}}</span>
+      <span class="brand">Chap Arena</span>
+      <a href="/"{{if eq .Page "stations"}} class="on"{{end}}>Stations</a>
+      <a href="/setup/settings"{{if eq .Page "settings"}} class="on"{{end}}>Settings</a>
+      <span class="right">{{.EventSettings.Name}}</span>
     </nav>
     <main>
       {{template "body" .}}

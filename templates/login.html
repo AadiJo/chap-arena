@@ -6,9 +6,10 @@ Author: pat@patfairbank.com (Patrick Fairbank)
 {{define "body"}}
 <form method="POST">
   {{if .ErrorMessage}}<p class="error">{{.ErrorMessage}}</p>{{end}}
-  <label>Username<input type="text" name="username" value="admin"></label>
-  <label>Password<input type="password" name="password" autofocus></label>
-  <button type="submit">Log In</button>
+  <div class="sechead">Log in</div>
+  <div class="row"><span class="k">Username</span><input class="text" type="text" name="username" value="admin"></div>
+  <div class="row"><span class="k">Password</span><input class="text" type="password" name="password" autofocus></div>
+  <div class="applybar"><button class="apply" type="submit">Log In</button></div>
 </form>
 {{end}}
 {{define "script"}}{{end}}

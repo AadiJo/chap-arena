@@ -5,6 +5,15 @@
 
 const applyStatus = document.getElementById("applyStatus");
 
+// Describes one station's radio state, distinguishing a deliberately bypassed station from one that
+// has a team assigned but hasn't associated.
+const describeStation = (station, radioEnabled) => {
+  if (!radioEnabled) return ["radio off", "dimmer"];
+  if (station.configuredTeamId === 0) return ["bypassed", "dimmer"];
+  if (station.linked) return [`linked, SNR ${station.signalNoiseRatio}`, "ok"];
+  return ["no link", "dimmer"];
+};
+
 const refresh = async () => {
   let status;
   try {
@@ -18,28 +27,21 @@ const refresh = async () => {
   status.stations.forEach((station, index) => {
     const cell = document.querySelector(`.link[data-station="${index}"]`);
     if (!cell) return;
-    if (!status.radioEnabled) {
-      cell.textContent = "radio off";
-      cell.className = "link unlinked";
-    } else if (station.linked) {
-      cell.textContent = `${station.teamId} linked, SNR ${station.signalNoiseRatio}`;
-      cell.className = "link linked";
-    } else {
-      cell.textContent = "—";
-      cell.className = "link unlinked";
-    }
+    const [text, className] = describeStation(station, status.radioEnabled);
+    cell.textContent = text;
+    cell.className = `link ${className}`;
   });
 
   const errors = [status.apply.radioError, status.apply.switchError].filter(Boolean);
   if (status.apply.inProgress) {
     applyStatus.textContent = "applying...";
-    applyStatus.className = "";
+    applyStatus.className = "muted";
   } else if (errors.length > 0) {
     applyStatus.textContent = errors.join(" / ");
     applyStatus.className = "error";
   } else {
     applyStatus.textContent = `radio ${status.radio.toLowerCase()}, switch ${status.switch.toLowerCase()}`;
-    applyStatus.className = "hint";
+    applyStatus.className = "muted";
   }
 };
 

@@ -10,26 +10,27 @@ Field hardware addresses, credentials, and the WPA key shared by every team radi
   {{if .ErrorMessage}}<p class="error">{{.ErrorMessage}}</p>{{end}}
   {{if .StatusMessage}}<p class="status">{{.StatusMessage}}</p>{{end}}
 
-  <label>Event name<input type="text" name="name" value="{{.Name}}"></label>
+  <div class="sechead">Event</div>
+  <div class="row"><span class="k">Name</span><input class="text" type="text" name="name" value="{{.Name}}"></div>
 
-  <h2>Team radio</h2>
-  <label class="check"><input type="checkbox" name="radioEnabled" {{if .RadioEnabled}}checked{{end}}> Configure the access point</label>
-  <label>Address<input type="text" name="apAddress" value="{{.ApAddress}}"></label>
-  <label>Password<input type="text" name="apPassword" value="{{.ApPassword}}"></label>
-  <label>Channel<input type="number" name="apChannel" value="{{.ApChannel}}"></label>
-  <label>Team WPA key<input type="text" name="teamWpaKey" value="{{.TeamWpaKey}}" minlength="8" maxlength="63"></label>
+  <div class="sechead">Team radio</div>
+  <div class="row"><span class="k">Configure</span><label class="check"><input type="checkbox" name="radioEnabled" {{if .RadioEnabled}}checked{{end}}> Push SSIDs to the access point</label></div>
+  <div class="row"><span class="k">Address</span><input class="text" type="text" name="apAddress" value="{{.ApAddress}}"></div>
+  <div class="row"><span class="k">Password</span><input class="text" type="text" name="apPassword" value="{{.ApPassword}}"></div>
+  <div class="row"><span class="k">Channel</span><input class="text" type="number" name="apChannel" value="{{.ApChannel}}"></div>
+  <div class="row"><span class="k">WPA key</span><input class="text" type="text" name="teamWpaKey" value="{{.TeamWpaKey}}" minlength="8" maxlength="63"></div>
   <p class="hint">Every station uses this one key. 8 to 63 characters.</p>
 
-  <h2>Team ethernet</h2>
-  <label class="check"><input type="checkbox" name="switchEnabled" {{if .SwitchEnabled}}checked{{end}}> Configure the switch</label>
-  <label>Address<input type="text" name="switchAddress" value="{{.SwitchAddress}}"></label>
-  <label>Password<input type="text" name="switchPassword" value="{{.SwitchPassword}}"></label>
+  <div class="sechead">Team ethernet</div>
+  <div class="row"><span class="k">Configure</span><label class="check"><input type="checkbox" name="switchEnabled" {{if .SwitchEnabled}}checked{{end}}> Push VLANs to the switch</label></div>
+  <div class="row"><span class="k">Address</span><input class="text" type="text" name="switchAddress" value="{{.SwitchAddress}}"></div>
+  <div class="row"><span class="k">Password</span><input class="text" type="text" name="switchPassword" value="{{.SwitchPassword}}"></div>
 
-  <h2>Access</h2>
-  <label>Admin password<input type="text" name="adminPassword" value="{{.AdminPassword}}"></label>
-  <p class="hint">Blank disables the login entirely.</p>
+  <div class="sechead">Access</div>
+  <div class="row"><span class="k">Admin password</span><input class="text" type="text" name="adminPassword" value="{{.AdminPassword}}"></div>
+  <p class="hint">Blank disables the login.</p>
 
-  <button type="submit">Save</button>
+  <div class="applybar"><button class="apply" type="submit">Save</button></div>
 </form>
 {{end}}
 {{define "script"}}{{end}}

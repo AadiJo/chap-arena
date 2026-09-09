@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/AadiJo/chap-arena/field"
-	"github.com/AadiJo/chap-arena/model"
 	"net/http"
 	"strconv"
 )
@@ -24,7 +23,7 @@ type stationView struct {
 
 // Everything the station page needs to render.
 type stationsPageView struct {
-	*model.EventSettings
+	pageView
 	Stations     [6]stationView
 	ErrorMessage string
 }
@@ -39,7 +38,13 @@ type statusResponse struct {
 }
 
 type stationStatusEntry struct {
-	Name              string  `json:"name"`
+	Name string `json:"name"`
+
+	// The team this station is assigned to. Zero means the station is bypassed, which the page shows
+	// differently from a station that has a team but no radio link.
+	ConfiguredTeamId int `json:"configuredTeamId"`
+
+	// The team the access point reports as actually associated with this station.
 	TeamId            int     `json:"teamId"`
 	Linked            bool    `json:"linked"`
 	SignalNoiseRatio  int     `json:"signalNoiseRatio"`
@@ -91,6 +96,7 @@ func (web *Web) statusApiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wifiStatuses := web.field.WifiStatuses()
+	configured := web.field.Settings.StationTeamIds()
 	response := statusResponse{
 		Radio:        web.field.AccessPoint.Status,
 		Switch:       web.field.Switch.Status,
@@ -103,6 +109,7 @@ func (web *Web) statusApiHandler(w http.ResponseWriter, r *http.Request) {
 			response.Stations,
 			stationStatusEntry{
 				Name:              field.StationNames[i],
+				ConfiguredTeamId:  configured[i],
 				TeamId:            wifiStatus.TeamId,
 				Linked:            wifiStatus.RadioLinked,
 				SignalNoiseRatio:  wifiStatus.SignalNoiseRatio,
@@ -125,7 +132,10 @@ func (web *Web) renderStations(w http.ResponseWriter, teamIds [6]int, errorMessa
 		return
 	}
 
-	data := stationsPageView{EventSettings: web.field.Settings, ErrorMessage: errorMessage}
+	data := stationsPageView{
+		pageView:     pageView{EventSettings: web.field.Settings, Page: "stations"},
+		ErrorMessage: errorMessage,
+	}
 	for i := range data.Stations {
 		alliance := "red"
 		if i >= 3 {
