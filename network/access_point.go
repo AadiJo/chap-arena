@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Team254/cheesy-arena/model"
+	"github.com/AadiJo/chap-arena/model"
 )
 
 const (

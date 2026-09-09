@@ -1,0 +1,32 @@
+{{/*
+Copyright 2026 Advait Johari. All Rights Reserved.
+
+The station configuration page: six team numbers and the button that pushes them to the hardware.
+*/}}
+{{define "title"}}Stations{{end}}
+{{define "body"}}
+<form method="POST" action="/apply">
+  {{if .ErrorMessage}}<p class="error">{{.ErrorMessage}}</p>{{end}}
+  <table class="stations">
+    <thead>
+      <tr><th>Station</th><th>Team</th><th>Radio</th></tr>
+    </thead>
+    <tbody>
+      {{range $index, $station := .Stations}}
+      <tr class="{{$station.Alliance}}">
+        <th>{{$station.Name}}</th>
+        <td>
+          <input type="number" name="{{$station.Key}}" min="1" max="25599" placeholder="empty"
+                 value="{{if $station.TeamId}}{{$station.TeamId}}{{end}}">
+        </td>
+        <td class="link" data-station="{{$index}}">&mdash;</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <button type="submit">Apply</button>
+  <span id="applyStatus"></span>
+</form>
+<p class="hint">Leave a station blank to bypass it. No SSID and no VLAN are configured for empty stations.</p>
+{{end}}
+{{define "script"}}<script src="/static/js/stations.js"></script>{{end}}

@@ -4,23 +4,23 @@
 package web
 
 import (
-	"github.com/Team254/cheesy-arena/field"
-	"github.com/Team254/cheesy-arena/game"
-	"github.com/Team254/cheesy-arena/websocket"
+	"github.com/AadiJo/chap-arena/field"
 	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestIndex(t *testing.T) {
+func TestIndexShowsStations(t *testing.T) {
 	web := setupTestWeb(t)
 
 	recorder := web.getHttpResponse("/")
 	assert.Equal(t, 200, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "Home - Untitled Event - Cheesy Arena")
+	assert.Contains(t, recorder.Body.String(), "Untitled Event")
+	for _, name := range field.StationNames {
+		assert.Contains(t, recorder.Body.String(), name)
+	}
 }
 
 func (web *Web) getHttpResponse(path string) *httptest.ResponseRecorder {
@@ -48,43 +48,6 @@ func (web *Web) postHttpResponse(path string, body string) *httptest.ResponseRec
 	return recorder
 }
 
-// Starts a real local HTTP server that can be used by more sophisticated tests.
-func (web *Web) startTestServer() (*httptest.Server, string) {
-	server := httptest.NewServer(web.newHandler())
-	return server, "ws" + server.URL[len("http"):]
-}
-
-// Receives the next websocket message and asserts that it is an error.
-func readWebsocketError(t *testing.T, ws *websocket.Websocket) string {
-	messageType, data, err := ws.Read()
-	if assert.Nil(t, err) && assert.Equal(t, "error", messageType) {
-		return data.(string)
-	}
-	return "error"
-}
-
-// Receives the next websocket message and asserts that it is of the given type.
-func readWebsocketType(t *testing.T, ws *websocket.Websocket, expectedMessageType string) any {
-	messageType, message, err := ws.ReadWithTimeout(time.Second)
-	if assert.Nil(t, err) {
-		assert.Equal(t, expectedMessageType, messageType)
-	}
-	return message
-}
-
-func readWebsocketMultiple(t *testing.T, ws *websocket.Websocket, count int) map[string]any {
-	messages := make(map[string]any)
-	for i := 0; i < count; i++ {
-		messageType, message, err := ws.ReadWithTimeout(time.Second)
-		if assert.Nil(t, err) {
-			messages[messageType] = message
-		}
-	}
-	return messages
-}
-
 func setupTestWeb(t *testing.T) *Web {
-	game.MatchTiming.PauseDurationSec = 2
-	arena := field.SetupTestArena(t)
-	return NewWeb(arena)
+	return NewWeb(field.SetupTestField(t))
 }

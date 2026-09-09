@@ -5,29 +5,25 @@ package main
 
 import (
 	"flag"
-	"github.com/Team254/cheesy-arena/field"
-	"github.com/Team254/cheesy-arena/network"
-	"github.com/Team254/cheesy-arena/web"
+	"github.com/AadiJo/chap-arena/field"
+	"github.com/AadiJo/chap-arena/web"
 	"log"
 )
 
 const eventDbPath = "./event.db"
-const httpPort = 8080
 
 // Main entry point for the application.
 func main() {
-	flag.BoolVar(&network.DevMode, "dev", false, "Bind driver station listeners to all IP addresses for development")
+	httpPort := flag.Int("port", 8080, "Port to serve the web interface on")
 	flag.Parse()
 
-	arena, err := field.NewArena(eventDbPath)
+	arenaField, err := field.NewField(eventDbPath)
 	if err != nil {
 		log.Fatalln("Error during startup: ", err)
 	}
 
-	// Start the web server in a separate goroutine.
-	web := web.NewWeb(arena)
-	go web.ServeWebInterface(httpPort)
+	// Start monitoring the access point and re-apply the last saved station assignment.
+	arenaField.Run()
 
-	// Run the arena state machine in the main thread.
-	arena.Run()
+	web.NewWeb(arenaField).ServeWebInterface(*httpPort)
 }

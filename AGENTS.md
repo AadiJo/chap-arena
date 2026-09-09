@@ -1,34 +1,45 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`main.go` is the entry point for the Go web server. Core domains live in top-level packages such as `field/`, `game/`, `network/`, `partner/`, `playoff/`, `tournament/`, and `websocket/`. Web UI assets are in `web/`, `static/`, and `templates/`. Pre-generated schedules are in `schedules/`. BoltDB data is stored in `db/` (and test fixtures in `*_test.db` files at the repo root).
+
+`main.go` is the entry point. `field/` owns the hardware clients and applies a station assignment to
+both of them. `network/` is the driver layer that talks to the access point over HTTP and the switch
+over Telnet; it is inherited from Cheesy Arena and should be changed reluctantly, since it is the
+only code that touches real hardware. `model/` is the BoltDB layer, holding a single settings
+record. `web/` is the two-page interface, with markup in `templates/` and assets in `static/`.
+
+This is a fork of [Cheesy Arena](https://github.com/Team254/cheesy-arena) that deliberately deleted
+match play, scoring, playoffs, displays, reports, and partner integrations. Don't reintroduce them.
 
 ## Build, Test, and Development Commands
+
 See `go.mod` for what version of Go to use.
-1. `go build`
-   Builds the `cheesy-arena` binary in the repo root.
-1. `./cheesy-arena`
-   Runs the server; open `http://localhost:8080` in a browser.
-1. `go test ./...`
-   Runs all Go tests across packages. Should be run after making any code changes to ensure nothing is broken.
-1. `go fmt ./...`
-   Formats all Go code in the repo. Should be run after making any code changes to ensure consistent style.
+
+1. `go build` builds the `chap-arena` binary in the repo root.
+1. `./chap-arena` runs the server; open `http://localhost:8080`.
+1. `go test -race ./...` runs all tests. Run after any change.
+1. `go fmt ./...` and `go vet ./...` both need to be clean; CI enforces them.
 
 ## Coding Style & Naming Conventions
-Follow standard Go style: tabs for indentation, exported names in `CamelCase`, unexported in `camelCase`. Format code with `gofmt` before submitting changes. If you update a set of enum-style constants, run `go generate ./...` to refresh the generated enum string helpers. Keep package names short and domain-focused (matching existing directories like `field`, `game`, `partner`).
 
-Order imports alphabetically without any grouping or empty lines between them or special treatment of standard library vs third-party imports. Update any files that don't adhere to this standard if editing them for other reasons. Don't use goimports.
+Follow standard Go style: tabs for indentation, exported names in `CamelCase`, unexported in
+`camelCase`. Format with `gofmt` before submitting.
+
+Order imports alphabetically without any grouping, empty lines, or special treatment of standard
+library vs third-party imports. Don't use goimports.
 
 ## Testing Guidelines
-Tests are Go `*_test.go` files co-located with packages (for example `field/`, `game/`, `partner/`, `playoff/`). Use `go test ./...` for the full suite and `go test ./field -run TestName` to target specific areas. When adding new behavior, add or update tests in the same package and prefer table-driven tests for coverage.
 
-## Commit & Pull Request Guidelines
-Commit messages in this repo are short, imperative sentences (for example “Fix driver station TCP reads”) and often include an issue/PR number in parentheses (for example “... (#258)”). Keep to that style.
+Tests are Go `*_test.go` files co-located with packages. Use `field.SetupTestField(t)` for anything
+needing a Field; it disables both pieces of hardware so tests never reach the network. Prefer
+table-driven tests. Keep tests focused on behavior that could actually break.
 
-PRs should include:
-1. A clear summary of the change.
-1. Test notes (exact commands run, for example `go test ./...`).
-1. UI screenshots when changing pages in `web/`, `static/`, or `templates/`.
+## Interface Conventions
 
-## Configuration & Ops Notes
-Cheesy Arena is designed to run as a local web server and uses BoltDB for data. For field networking and hardware integrations, see the project README and relevant `field/` or `plc/` code before making behavioral changes.
+Dark, true black background, white primary text, information dense. No decorative card or pill
+chrome, and no continuously repainting CSS animations. Minimal copy.
+
+## Upstream
+
+`upstream` points at Team254/cheesy-arena for pulling in fixes to `network/`. Never open a pull
+request against it.

@@ -1,35 +1,29 @@
-// Copyright 2017 Team 254. All Rights Reserved.
-// Author: pat@patfairbank.com (Patrick Fairbank)
+// Copyright 2026 Advait Johari. All Rights Reserved.
 //
 // Helper methods for use in tests in this package and others.
 
 package field
 
 import (
-	"github.com/Team254/cheesy-arena/game"
-	"github.com/Team254/cheesy-arena/model"
+	"github.com/AadiJo/chap-arena/model"
 	"github.com/stretchr/testify/assert"
-	"math/rand"
 	"path/filepath"
 	"testing"
 )
 
-func SetupTestArena(t *testing.T) *Arena {
-	rand.Seed(0)
+// Builds a Field backed by a temporary database, with both pieces of hardware disabled so that
+// applying a station assignment doesn't try to reach the network.
+func SetupTestField(t *testing.T) *Field {
 	model.BaseDir = ".."
-	dbDir := t.TempDir()
-	dbPath := filepath.Join(dbDir, "test.db")
-	arena, err := NewArena(dbPath)
+	field, err := NewField(filepath.Join(t.TempDir(), "test.db"))
 	assert.Nil(t, err)
 	t.Cleanup(
 		func() {
-			arena.Database.Close()
+			field.Database.Close()
 		},
 	)
-	return arena
-}
 
-func setupTestArena(t *testing.T) *Arena {
-	game.MatchTiming.PauseDurationSec = 2
-	return SetupTestArena(t)
+	field.Settings.RadioEnabled = false
+	field.Settings.SwitchEnabled = false
+	return field
 }

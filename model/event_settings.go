@@ -1,124 +1,71 @@
 // Copyright 2014 Team 254. All Rights Reserved.
 // Author: pat@patfairbank.com (Patrick Fairbank)
 //
-// Model and datastore read/write methods for event-level configuration.
+// Model and datastore read/write methods for the single configuration record that Chap Arena keeps:
+// the addresses and credentials of the field hardware, the WPA key shared by every team radio, and
+// the team currently assigned to each of the six alliance stations.
 
 package model
 
-import (
-	"strings"
-
-	"github.com/Team254/cheesy-arena/game"
-)
-
-type PlayoffType int
-
 const (
-	DoubleEliminationPlayoff PlayoffType = iota
-	SingleEliminationPlayoff
-)
-
-// Configured here to avoid circular import dependencies.
-var (
-	sccDefaultUpCommands = []string{
-		"configure terminal",
-		"interface range gigabitEthernet 1/2-4",
-		"no shutdown",
-		"exit",
-		"exit",
-		"exit",
-	}
-	sccDefaultDownCommands = []string{
-		"configure terminal",
-		"interface range gigabitEthernet 1/2-4",
-		"shutdown",
-		"exit",
-		"exit",
-		"exit",
-	}
+	// Bounds imposed by WPA2 on the pre-shared key.
+	MinWpaKeyLength = 8
+	MaxWpaKeyLength = 63
 )
 
 type EventSettings struct {
-	Id                               int `db:"id"`
-	Name                             string
-	PlayoffType                      PlayoffType
-	NumPlayoffAlliances              int
-	SelectionRound2Order             string
-	SelectionRound3Order             string
-	SelectionShowUnpickedTeams       bool
-	TbaDownloadEnabled               bool
-	TbaPublishingEnabled             bool
-	TbaEventCode                     string
-	TbaSecretId                      string
-	TbaSecret                        string
-	AutoAudienceDisplayEnabled       bool
-	NexusEnabled                     bool
-	NexusAutoQueueEnabled            bool
-	NexusAutoQueueKey                string
-	NetworkSecurityEnabled           bool
-	ApAddress                        string
-	ApPassword                       string
-	ApChannel                        int
-	SwitchAddress                    string
-	SwitchPassword                   string
-	SCCManagementEnabled             bool
-	RedSCCAddress                    string
-	BlueSCCAddress                   string
-	SCCUsername                      string
-	SCCPassword                      string
-	SCCUpCommands                    string
-	SCCDownCommands                  string
-	PlcAddress                       string
-	LedControllerAddress             string
-	LedUniverseMode                  string
-	AdminPassword                    string
-	TeamSignRed1Id                   int
-	TeamSignRed2Id                   int
-	TeamSignRed3Id                   int
-	TeamSignRedTimerId               int
-	TeamSignBlue1Id                  int
-	TeamSignBlue2Id                  int
-	TeamSignBlue3Id                  int
-	TeamSignBlueTimerId              int
-	UseLiteUdpPort                   bool
-	BlackmagicAddresses              string
-	CompanionAddress                 string
-	CompanionPort                    int
-	CompanionMatchPreviewPage        int
-	CompanionMatchPreviewRow         int
-	CompanionMatchPreviewColumn      int
-	CompanionSetAudiencePage         int
-	CompanionSetAudienceRow          int
-	CompanionSetAudienceColumn       int
-	CompanionMatchStartPage          int
-	CompanionMatchStartRow           int
-	CompanionMatchStartColumn        int
-	CompanionTeleopStartPage         int
-	CompanionTeleopStartRow          int
-	CompanionTeleopStartColumn       int
-	CompanionEndgameStartPage        int
-	CompanionEndgameStartRow         int
-	CompanionEndgameStartColumn      int
-	CompanionMatchEndPage            int
-	CompanionMatchEndRow             int
-	CompanionMatchEndColumn          int
-	CompanionPostResultPage          int
-	CompanionPostResultRow           int
-	CompanionPostResultColumn        int
-	CompanionAllianceSelectionPage   int
-	CompanionAllianceSelectionRow    int
-	CompanionAllianceSelectionColumn int
-	CompanionMatchAbortPage          int
-	CompanionMatchAbortRow           int
-	CompanionMatchAbortColumn        int
-	AutoDurationSec                  int
-	PauseDurationSec                 int
-	TransitionShiftDurationSec       int
-	ShiftDurationSec                 int
-	EndgameDurationSec               int
-	EnergizedBonusThreshold          int
-	SuperchargedBonusThreshold       int
-	TraversalBonusThreshold          int
+	Id   int `db:"id"`
+	Name string
+
+	// Team radio: a Vivid-Hosting VH-113 access point running OpenWRT.
+	RadioEnabled bool
+	ApAddress    string
+	ApPassword   string
+	ApChannel    int
+
+	// The WPA key handed to every team radio. Cheesy Arena generates a distinct key per team; at an
+	// at-home field a single shared key is far easier to distribute.
+	TeamWpaKey string
+
+	// Team ethernet: a Cisco Catalyst 3500-series switch reached over Telnet.
+	SwitchEnabled  bool
+	SwitchAddress  string
+	SwitchPassword string
+
+	// The team assigned to each alliance station. Zero means the station is empty, which is treated
+	// the same way a bypassed station is: no SSID and no VLAN are configured for it.
+	Red1TeamId  int
+	Red2TeamId  int
+	Red3TeamId  int
+	Blue1TeamId int
+	Blue2TeamId int
+	Blue3TeamId int
+
+	// Guards the web interface. Blank disables authentication entirely.
+	AdminPassword string
+}
+
+// Returns the six station assignments in alliance station order, matching the ordering that the
+// access point and switch configuration methods expect.
+func (settings *EventSettings) StationTeamIds() [6]int {
+	return [6]int{
+		settings.Red1TeamId,
+		settings.Red2TeamId,
+		settings.Red3TeamId,
+		settings.Blue1TeamId,
+		settings.Blue2TeamId,
+		settings.Blue3TeamId,
+	}
+}
+
+// Overwrites the six station assignments from an array in alliance station order.
+func (settings *EventSettings) SetStationTeamIds(teamIds [6]int) {
+	settings.Red1TeamId = teamIds[0]
+	settings.Red2TeamId = teamIds[1]
+	settings.Red3TeamId = teamIds[2]
+	settings.Blue1TeamId = teamIds[3]
+	settings.Blue2TeamId = teamIds[4]
+	settings.Blue3TeamId = teamIds[5]
 }
 
 func (database *Database) GetEventSettings() (*EventSettings, error) {
@@ -133,26 +80,12 @@ func (database *Database) GetEventSettings() (*EventSettings, error) {
 
 	// Database record doesn't exist yet; create it now.
 	eventSettings := EventSettings{
-		Name:                       "Untitled Event",
-		PlayoffType:                DoubleEliminationPlayoff,
-		NumPlayoffAlliances:        8,
-		SelectionRound2Order:       "L",
-		SelectionRound3Order:       "",
-		SelectionShowUnpickedTeams: true,
-		TbaDownloadEnabled:         true,
-		ApChannel:                  36,
-		SCCUpCommands:              strings.Join(sccDefaultUpCommands, "\n"),
-		SCCDownCommands:            strings.Join(sccDefaultDownCommands, "\n"),
-		LedUniverseMode:            "single",
-		CompanionAddress:           "",
-		AutoDurationSec:            game.MatchTiming.AutoDurationSec,
-		PauseDurationSec:           game.MatchTiming.PauseDurationSec,
-		TransitionShiftDurationSec: game.MatchTiming.TransitionShiftDurationSec,
-		ShiftDurationSec:           game.MatchTiming.ShiftDurationSec,
-		EndgameDurationSec:         game.MatchTiming.EndgameDurationSec,
-		EnergizedBonusThreshold:    game.EnergizedBonusThreshold,
-		SuperchargedBonusThreshold: game.SuperchargedBonusThreshold,
-		TraversalBonusThreshold:    game.TraversalBonusThreshold,
+		Name:          "Untitled Event",
+		RadioEnabled:  true,
+		ApAddress:     "10.0.100.2",
+		ApChannel:     36,
+		SwitchEnabled: true,
+		SwitchAddress: "10.0.100.2",
 	}
 
 	if err := database.eventSettingsTable.create(&eventSettings); err != nil {

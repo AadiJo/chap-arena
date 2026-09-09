@@ -7,7 +7,7 @@ package web
 
 import (
 	"fmt"
-	"github.com/Team254/cheesy-arena/model"
+	"github.com/AadiJo/chap-arena/model"
 	"github.com/google/uuid"
 	"log"
 	"net/http"
@@ -29,7 +29,7 @@ func (web *Web) loginPostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := model.UserSession{Token: uuid.New().String(), Username: username, CreatedAt: time.Now()}
-	if err := web.arena.Database.CreateUserSession(&session); err != nil {
+	if err := web.field.Database.CreateUserSession(&session); err != nil {
 		handleWebErr(w, err)
 		return
 	}
@@ -51,7 +51,7 @@ func (web *Web) renderLogin(w http.ResponseWriter, r *http.Request, errorMessage
 	data := struct {
 		*model.EventSettings
 		ErrorMessage string
-	}{web.arena.EventSettings, errorMessage}
+	}{web.field.Settings, errorMessage}
 	err = template.ExecuteTemplate(w, "base", data)
 	if err != nil {
 		handleWebErr(w, err)
@@ -61,7 +61,7 @@ func (web *Web) renderLogin(w http.ResponseWriter, r *http.Request, errorMessage
 
 // Returns true if the given user is authorized for admin operations. Used for HTTP cookie authentication.
 func (web *Web) userIsAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if web.arena.EventSettings.AdminPassword == "" {
+	if web.field.Settings.AdminPassword == "" {
 		// Disable auth if there is no password configured.
 		return true
 	}
@@ -83,7 +83,7 @@ func (web *Web) getUserSessionFromCookie(r *http.Request) *model.UserSession {
 	if err != nil {
 		return nil
 	}
-	session, err := web.arena.Database.GetUserSessionByToken(token.Value)
+	session, err := web.field.Database.GetUserSessionByToken(token.Value)
 	if err != nil {
 		log.Printf("Failed to get user session by token: %v", err)
 	}
@@ -91,7 +91,7 @@ func (web *Web) getUserSessionFromCookie(r *http.Request) *model.UserSession {
 }
 
 func (web *Web) checkAuthPassword(user, password string) error {
-	if user == adminUser && password == web.arena.EventSettings.AdminPassword {
+	if user == adminUser && password == web.field.Settings.AdminPassword {
 		return nil
 	} else {
 		return fmt.Errorf("Invalid login credentials.")

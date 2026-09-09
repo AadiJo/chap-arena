@@ -1,4 +1,4 @@
-module github.com/Team254/cheesy-arena
+module github.com/AadiJo/chap-arena
 
 go 1.26.0
 

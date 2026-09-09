@@ -1,0 +1,88 @@
+/* Copyright 2026 Advait Johari. All Rights Reserved. */
+
+:root {
+  --bg: #000;
+  --fg: #fff;
+  --dim: #8a8a8a;
+  --line: #262626;
+  --red: #ff4d4d;
+  --blue: #4d94ff;
+  --ok: #33cc66;
+  --bad: #ff4d4d;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+nav a { color: var(--dim); text-decoration: none; }
+nav a:hover { color: var(--fg); }
+nav .brand { color: var(--fg); font-weight: 700; }
+nav .event-name { margin-left: auto; color: var(--dim); }
+
+main { padding: 20px; max-width: 720px; }
+
+h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin: 24px 0 8px;
+  font-weight: 400;
+}
+
+table.stations { border-collapse: collapse; width: 100%; }
+table.stations th, table.stations td {
+  text-align: left;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-weight: 400;
+}
+table.stations thead th { color: var(--dim); font-size: 12px; }
+table.stations tr.red th { color: var(--red); }
+table.stations tr.blue th { color: var(--blue); }
+
+input[type=text], input[type=password], input[type=number] {
+  background: #0d0d0d;
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 5px 8px;
+  font: inherit;
+  width: 220px;
+}
+input:focus { outline: 1px solid #555; }
+
+label { display: block; margin: 6px 0; color: var(--dim); }
+label input { margin-left: 10px; }
+label.check input { margin: 0 6px 0 0; }
+
+button {
+  margin-top: 16px;
+  background: var(--fg);
+  color: var(--bg);
+  border: 0;
+  padding: 7px 18px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:hover { background: var(--dim); }
+
+.hint { color: var(--dim); font-size: 12px; }
+.error { color: var(--bad); }
+.status { color: var(--ok); }
+.linked { color: var(--ok); }
+.unlinked { color: var(--dim); }

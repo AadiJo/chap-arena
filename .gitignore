@@ -2,7 +2,7 @@
 *.o
 *.a
 *.so
-cheesy-arena
+chap-arena
 
 # Folders
 _obj
@@ -27,5 +27,3 @@ _testmain.go
 *.db-journal
 *.out
 .DS_Store
-static/logs
-static/img/avatars
