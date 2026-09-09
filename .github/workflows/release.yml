@@ -6,7 +6,17 @@ name: Create Release
 permissions:
   contents: write
 jobs:
-  release:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below. Unzip it and run the binary from inside the unzipped folder, so that it can find templates/ and static/."
+
+  bundle:
+    needs: create
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -31,11 +41,8 @@ jobs:
           cp -r LICENSE README.md static switch_config.txt templates chap-arena/
           zip -r -X "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" chap-arena
 
-      - name: Publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below." || true
       - name: Upload bundle
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "$GITHUB_REF_NAME" "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" --clobber
