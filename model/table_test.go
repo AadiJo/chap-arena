@@ -5,6 +5,7 @@ package model
 
 import (
 	"github.com/stretchr/testify/assert"
+	"go.etcd.io/bbolt"
 	"testing"
 )
 
@@ -203,4 +204,37 @@ func TestTableCrudErrors(t *testing.T) {
 	if assert.NotNil(t, err) {
 		assert.Equal(t, "can't delete non-existent validRecord with ID 12345", err.Error())
 	}
+}
+
+func TestTableUpdatePreservesUnknownFields(t *testing.T) {
+	db := setupTestDb(t)
+
+	table, err := newTable[validRecord](db)
+	if !assert.Nil(t, err) {
+		return
+	}
+
+	// Simulate a record written by a build that knows about more fields than this one does.
+	err = db.bolt.Update(
+		func(tx *bbolt.Tx) error {
+			return tx.Bucket(table.bucketKey).Put(
+				idToKey(1), []byte(`{"Id":1,"IntData":254,"StringData":"old","Nickname":"The Cheesy Poofs"}`),
+			)
+		},
+	)
+	assert.Nil(t, err)
+
+	// Known fields are overwritten, including with zero values; unknown fields survive.
+	assert.Nil(t, table.update(&validRecord{Id: 1, IntData: 0, StringData: "new"}))
+	err = db.bolt.View(
+		func(tx *bbolt.Tx) error {
+			assert.JSONEq(
+				t,
+				`{"Id":1,"IntData":0,"StringData":"new","Nickname":"The Cheesy Poofs"}`,
+				string(tx.Bucket(table.bucketKey).Get(idToKey(1))),
+			)
+			return nil
+		},
+	)
+	assert.Nil(t, err)
 }

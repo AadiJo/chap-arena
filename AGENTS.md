@@ -1,14 +1,17 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`main.go` is the entry point for the Go web server. Core domains live in top-level packages such as `field/`, `game/`, `network/`, `partner/`, `playoff/`, `tournament/`, and `websocket/`. Web UI assets are in `web/`, `static/`, and `templates/`. Pre-generated schedules are in `schedules/`. BoltDB data is stored in `db/` (and test fixtures in `*_test.db` files at the repo root).
+`main.go` is the entry point for the Go web server. `field/` owns the station assignment and drives the network
+hardware through `network/` (access point, switch, SCC switches). `model/` reads and writes the BoltDB `event.db`, which
+is shared with full Cheesy Arena. `web/` serves the JSON API and the single-page UI in `web/static/`, embedded in the
+binary. `web/e2e_test.go` runs the whole app against a fake access point and writes a transcript to `e2e-output/`.
 
 ## Build, Test, and Development Commands
 See `go.mod` for what version of Go to use.
 1. `go build`
    Builds the `cheesy-arena` binary in the repo root.
 1. `./cheesy-arena`
-   Runs the server; open `http://localhost:8080` in a browser.
+   Runs the server; open `http://localhost:8080` in a browser. Use `-db` and `-port` to run a scratch copy.
 1. `go test ./...`
    Runs all Go tests across packages. Should be run after making any code changes to ensure nothing is broken.
 1. `go fmt ./...`
@@ -28,7 +31,7 @@ Commit messages in this repo are short, imperative sentences (for example “Fix
 PRs should include:
 1. A clear summary of the change.
 1. Test notes (exact commands run, for example `go test ./...`).
-1. UI screenshots when changing pages in `web/`, `static/`, or `templates/`.
+1. UI screenshots when changing `web/static/`.
 
 ## Configuration & Ops Notes
 Cheesy Arena is designed to run as a local web server and uses BoltDB for data. For field networking and hardware integrations, see the project README and relevant `field/` or `plc/` code before making behavioral changes.

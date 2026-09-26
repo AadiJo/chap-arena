@@ -16,7 +16,7 @@ func TestAccessPoint_ConfigureTeamWifi(t *testing.T) {
 	var ap AccessPoint
 	var request configurationRequest
 	wifiStatuses := [6]*TeamWifiStatus{{}, {}, {}, {}, {}, {}}
-	ap.SetSettings("dummy", "password1", 123, true, wifiStatuses)
+	ap.SetSettings("dummy", "password1", 123, wifiStatuses)
 
 	// Mock the radio API server.
 	radioServer := httptest.NewServer(
@@ -90,7 +90,7 @@ func TestAccessPoint_ConfigureTeamWifi(t *testing.T) {
 func TestAccessPoint_updateMonitoring(t *testing.T) {
 	var ap AccessPoint
 	wifiStatuses := [6]*TeamWifiStatus{{}, {}, {}, {}, {}, {}}
-	ap.SetSettings("dummy", "password2", 123, true, wifiStatuses)
+	ap.SetSettings("dummy", "password2", 123, wifiStatuses)
 
 	apStatus := accessPointStatus{
 		Channel: 456,
@@ -167,7 +167,7 @@ func TestAccessPoint_updateMonitoring(t *testing.T) {
 func TestAccessPoint_statusMatchesLastConfiguration(t *testing.T) {
 	var ap AccessPoint
 	wifiStatuses := [6]*TeamWifiStatus{{}, {}, {}, {}, {}, {}}
-	ap.SetSettings("dummy", "", 123, true, wifiStatuses)
+	ap.SetSettings("dummy", "", 123, wifiStatuses)
 
 	assert.True(t, ap.statusMatchesLastConfiguration())
 	team1 := &model.Team{Id: 254, WpaKey: "11111111"}

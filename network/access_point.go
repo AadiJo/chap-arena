@@ -23,13 +23,12 @@ const (
 )
 
 type AccessPoint struct {
-	apiUrl                 string
-	password               string
-	channel                int
-	networkSecurityEnabled bool
-	Status                 string
-	TeamWifiStatuses       [6]*TeamWifiStatus
-	lastConfiguredTeams    [6]*model.Team
+	apiUrl              string
+	password            string
+	channel             int
+	Status              string
+	TeamWifiStatuses    [6]*TeamWifiStatus
+	lastConfiguredTeams [6]*model.Team
 }
 
 type TeamWifiStatus struct {
@@ -80,13 +79,11 @@ var connectionQualityMap = map[string]int{
 func (ap *AccessPoint) SetSettings(
 	address, password string,
 	channel int,
-	networkSecurityEnabled bool,
 	wifiStatuses [6]*TeamWifiStatus,
 ) {
 	ap.apiUrl = fmt.Sprintf("http://%s", address)
 	ap.password = password
 	ap.channel = channel
-	ap.networkSecurityEnabled = networkSecurityEnabled
 	ap.Status = "UNKNOWN"
 	ap.TeamWifiStatuses = wifiStatuses
 }
@@ -110,12 +107,14 @@ func (ap *AccessPoint) Run() {
 	}
 }
 
+// Records the teams the access point should already be configured for, without calling its API. Used on startup so
+// Run() leaves a matching configuration alone and only reconfigures the access point if it differs.
+func (ap *AccessPoint) SetExpectedTeams(teams [6]*model.Team) {
+	ap.lastConfiguredTeams = teams
+}
+
 // Calls the access point's API to configure the team SSIDs and WPA keys.
 func (ap *AccessPoint) ConfigureTeamWifi(teams [6]*model.Team) error {
-	if !ap.networkSecurityEnabled {
-		return nil
-	}
-
 	ap.Status = "CONFIGURING"
 	ap.lastConfiguredTeams = teams
 	request := configurationRequest{
@@ -167,10 +166,6 @@ func (ap *AccessPoint) ConfigureTeamWifi(teams [6]*model.Team) error {
 
 // Fetches the current access point status from the API and updates the status structure.
 func (ap *AccessPoint) updateMonitoring() error {
-	if !ap.networkSecurityEnabled {
-		return nil
-	}
-
 	// Fetch the status from the access point API.
 	url := ap.apiUrl + "/status"
 	httpRequest, err := http.NewRequest("GET", url, nil)

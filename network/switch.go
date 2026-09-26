@@ -20,6 +20,8 @@ const (
 	switchConfigPauseDurationSec   = 2
 	switchTeamGatewayAddress       = 4
 	switchTelnetPort               = 23
+	switchDialTimeoutSec           = 5
+	switchCommandTimeoutSec        = 30
 )
 
 const (
@@ -40,11 +42,6 @@ type Switch struct {
 	configPauseDuration   time.Duration
 	Status                string
 }
-
-const ServerIpAddress = "10.0.100.5" // The DS will try to connect to this address only.
-
-// DevMode allows driver station listeners to bind to all local IP addresses.
-var DevMode = false
 
 func NewSwitch(address, password string) *Switch {
 	return &Switch{
@@ -131,11 +128,18 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 // returns it as a string.
 func (sw *Switch) runCommand(command string) (string, error) {
 	// Open a Telnet connection to the switch.
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", sw.address, sw.port))
+	conn, err := net.DialTimeout(
+		"tcp", fmt.Sprintf("%s:%d", sw.address, sw.port), switchDialTimeoutSec*time.Second,
+	)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
+
+	// Bound the whole exchange so an unresponsive switch can't block later configurations indefinitely.
+	if err = conn.SetDeadline(time.Now().Add(switchCommandTimeoutSec * time.Second)); err != nil {
+		return "", err
+	}
 
 	// Login to the AP, send the command, and log out all at once.
 	writer := bufio.NewWriter(conn)

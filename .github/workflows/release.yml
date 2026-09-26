@@ -7,8 +7,7 @@ jobs:
   create_release:
     runs-on: ubuntu-latest
     env:
-      ASSET_FILES: LICENSE README.md fix_avatar_colors_for_overlay font schedules static
-        switch_config.txt templates tunnel
+      ASSET_FILES: LICENSE README.md switch_config.txt
     steps:
       - name: Install Go
         uses: actions/setup-go@v2
@@ -26,7 +25,7 @@ jobs:
         with:
           tag_name: ${{ github.ref }}
           release_name: Cheesy Arena ${{ github.ref }}
-          body: This is a release of Cheesy Arena for the 2026 FRC game, REBUILT. Download the version for your
+          body: This is a release of Cheesy Arena Radio Config. Download the version for your
             operating system below. Supported operating systems are Linux, macOS (x64 and M1), and Windows.
           draft: false
           prerelease: false

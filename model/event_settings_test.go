@@ -4,52 +4,28 @@
 package model
 
 import (
-	"github.com/Team254/cheesy-arena/game"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
 func TestEventSettingsReadWrite(t *testing.T) {
 	db := setupTestDb(t)
-	defer db.Close()
 
 	eventSettings, err := db.GetEventSettings()
 	assert.Nil(t, err)
 	assert.Equal(
 		t,
 		EventSettings{
-			Id:                         1,
-			Name:                       "Untitled Event",
-			PlayoffType:                DoubleEliminationPlayoff,
-			NumPlayoffAlliances:        8,
-			SelectionRound2Order:       "L",
-			SelectionRound3Order:       "",
-			SelectionShowUnpickedTeams: true,
-			TbaDownloadEnabled:         true,
-			ApChannel:                  36,
-			SCCUpCommands:              "configure terminal\ninterface range gigabitEthernet 1/2-4\nno shutdown\nexit\nexit\nexit",
-			SCCDownCommands:            "configure terminal\ninterface range gigabitEthernet 1/2-4\nshutdown\nexit\nexit\nexit",
-			LedControllerAddress:       "",
-			LedUniverseMode:            "single",
-			AutoDurationSec:            20,
-			PauseDurationSec:           3,
-			TransitionShiftDurationSec: 10,
-			ShiftDurationSec:           25,
-			EndgameDurationSec:         30,
-			EnergizedBonusThreshold:    100,
-			SuperchargedBonusThreshold: 360,
-			TraversalBonusThreshold:    50,
-			CompanionAddress:           "",
-			CompanionPort:              0,
+			Id:              1,
+			ApChannel:       36,
+			SCCUpCommands:   "configure terminal\ninterface range gigabitEthernet 1/2-4\nno shutdown\nexit\nexit\nexit",
+			SCCDownCommands: "configure terminal\ninterface range gigabitEthernet 1/2-4\nshutdown\nexit\nexit\nexit",
 		},
 		*eventSettings,
 	)
-	assert.Equal(t, 140, game.GetTeleopDurationSec())
 
-	eventSettings.Name = "Chezy Champs"
-	eventSettings.NumPlayoffAlliances = 6
-	eventSettings.SelectionRound2Order = "F"
-	eventSettings.SelectionRound3Order = "L"
+	eventSettings.SwitchPassword = "password"
+	eventSettings.StationTeamIds = [6]int{254, 0, 0, 1114, 0, 0}
 	err = db.UpdateEventSettings(eventSettings)
 	assert.Nil(t, err)
 	eventSettings2, err := db.GetEventSettings()

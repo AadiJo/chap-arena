@@ -174,7 +174,8 @@ func (table *table[R]) create(record *R) error {
 }
 
 // Persists the given record as an update to the existing row in the table. Returns an error if the record does not
-// already exist.
+// already exist. Fields in the stored JSON that the record type doesn't know about are kept, so updating an event.db
+// written by full Cheesy Arena doesn't discard its data.
 func (table *table[R]) update(record *R) error {
 	// Validate that the record has a non-zero ID.
 	value := reflect.ValueOf(record).Elem()
@@ -197,13 +198,29 @@ func (table *table[R]) update(record *R) error {
 				return fmt.Errorf("can't update non-existent %s with ID %d", table.name, id)
 			}
 
-			recordJson, err := json.Marshal(record)
+			recordJson, err := mergeRecordJson(oldRecord, record)
 			if err != nil {
 				return err
 			}
 			return bucket.Put(key, recordJson)
 		},
 	)
+}
+
+// Serializes the record on top of the old stored JSON object, overwriting known fields and keeping unknown ones.
+func mergeRecordJson[R any](oldRecordJson []byte, record *R) ([]byte, error) {
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(oldRecordJson, &fields); err != nil {
+		return nil, err
+	}
+	recordJson, err := json.Marshal(record)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(recordJson, &fields); err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
 }
 
 // Deletes the record having the given ID from the table. Returns an error if the record does not exist.

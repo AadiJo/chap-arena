@@ -5,23 +5,11 @@
 
 package model
 
-import "sort"
-
+// Team holds the only team fields this app uses. Other fields stored by full Cheesy Arena (name, city, etc.) are kept
+// intact on update by the table layer.
 type Team struct {
-	Id              int `db:"id,manual"`
-	Name            string
-	Nickname        string
-	City            string
-	StateProv       string
-	Country         string
-	SchoolName      string
-	RookieYear      int
-	RobotName       string
-	Accomplishments string
-	WpaKey          string
-	YellowCard      bool
-	HasConnected    bool
-	FtaNotes        string
+	Id     int `db:"id,manual"`
+	WpaKey string
 }
 
 func (database *Database) CreateTeam(team *Team) error {
@@ -34,25 +22,4 @@ func (database *Database) GetTeamById(id int) (*Team, error) {
 
 func (database *Database) UpdateTeam(team *Team) error {
 	return database.teamTable.update(team)
-}
-
-func (database *Database) DeleteTeam(id int) error {
-	return database.teamTable.delete(id)
-}
-
-func (database *Database) TruncateTeams() error {
-	return database.teamTable.truncate()
-}
-
-func (database *Database) GetAllTeams() ([]Team, error) {
-	teams, err := database.teamTable.getAll()
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(
-		teams, func(i, j int) bool {
-			return teams[i].Id < teams[j].Id
-		},
-	)
-	return teams, nil
 }
