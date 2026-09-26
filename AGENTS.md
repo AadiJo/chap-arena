@@ -4,7 +4,9 @@
 `main.go` is the entry point for the Go web server. `field/` owns the station assignment and drives the network
 hardware through `network/` (access point, switch, SCC switches). `model/` reads and writes the BoltDB `event.db`, which
 is shared with full Cheesy Arena. `web/` serves the JSON API and the single-page UI in `web/static/`, embedded in the
-binary. `web/e2e_test.go` runs the whole app against a fake access point and writes a transcript to `e2e-output/`.
+binary: markup and CSS in `index.html`, logic in `app.js` (its header comment lists the markup contract), and `demo.js`,
+which fakes the API when the URL has `?demo`.
+`web/e2e_test.go` runs the whole app against a fake access point and writes a transcript to `e2e-output/`.
 
 ## Build, Test, and Development Commands
 See `go.mod` for what version of Go to use.

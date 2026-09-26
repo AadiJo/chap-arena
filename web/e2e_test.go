@@ -170,7 +170,7 @@ func TestEndToEnd(t *testing.T) {
 	require.Nil(t, err)
 	page, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	assert.Contains(t, string(page), "Radio Config")
+	assert.Contains(t, string(page), "FMS Config")
 
 	// Settings from the copied database are visible and can be pointed at the (fake) AP.
 	status, settings := call("GET", "/api/settings", nil)
@@ -193,6 +193,8 @@ func TestEndToEnd(t *testing.T) {
 		{{TeamId: 254, WpaKey: "12345678"}, empty, empty, {TeamId: 254, WpaKey: "12345678"}, empty, empty},
 		{{TeamId: 254, WpaKey: "short"}, empty, empty, empty, empty, empty},
 		{{TeamId: 25600, WpaKey: "12345678"}, empty, empty, empty, empty, empty},
+		// No default WPA key is set yet, so a blank key is still too short.
+		{{TeamId: 254}, empty, empty, empty, empty, empty},
 	} {
 		status, _ = call("PUT", "/api/stations", invalid)
 		assert.Equal(t, 400, status)
@@ -227,6 +229,38 @@ func TestEndToEnd(t *testing.T) {
 	)
 	assert.Contains(t, strings.Join(logTail.Lines(), "\n"), "Applying stations R1=254 R2=- R3=- B1=- B2=1114 B3=-")
 
+	// A default WPA key must itself be a valid key; a rejected one leaves the stored settings alone.
+	settings["DefaultWpaKey"] = "short"
+	status, _ = call("PUT", "/api/settings", settings)
+	assert.Equal(t, 400, status)
+	_, stored := call("GET", "/api/settings", nil)
+	assert.Equal(t, "", stored["DefaultWpaKey"])
+	settings["DefaultWpaKey"] = "fieldkey123"
+	status, _ = call("PUT", "/api/settings", settings)
+	assert.Equal(t, 200, status)
+
+	// With a default set, a team with a blank key gets the default (on the AP and in its team record), a typed key still
+	// wins, and empty stations stay empty.
+	status, applied := call(
+		"PUT", "/api/stations", [6]field.Assignment{
+			{TeamId: 254, WpaKey: "newkey254"}, empty, empty, empty, {TeamId: 1114, WpaKey: "simbotics"}, {TeamId: 2056},
+		},
+	)
+	assert.Equal(t, 200, status)
+	appliedB3 := applied["stations"].([]any)[5].(map[string]any)["assignment"].(map[string]any)
+	assert.Equal(t, map[string]any{"teamId": 2056.0, "wpaKey": "fieldkey123"}, appliedB3)
+	require.Equal(t, 2, ap.configurationCount())
+	note("== AP configuration received\n%s", ap.configurations[1])
+	assert.JSONEq(
+		t,
+		`{"channel":5,"stationConfigurations":{"red1":{"ssid":"254","wpaKey":"newkey254"},`+
+			`"blue2":{"ssid":"1114","wpaKey":"simbotics"},"blue3":{"ssid":"2056","wpaKey":"fieldkey123"}}}`,
+		ap.configurations[1],
+	)
+	status, team = call("GET", "/api/teams/2056", nil)
+	assert.Equal(t, 200, status)
+	assert.Equal(t, "fieldkey123", team["wpaKey"])
+
 	// After a restart the assignment is restored and the matching AP is left alone.
 	server.Close()
 	require.Nil(t, database.Close())
@@ -238,7 +272,7 @@ func TestEndToEnd(t *testing.T) {
 	restored := liveStatus["stations"].([]any)[4].(map[string]any)["assignment"].(map[string]any)
 	assert.Equal(t, map[string]any{"teamId": 1114.0, "wpaKey": "simbotics"}, restored)
 	time.Sleep(2500 * time.Millisecond)
-	assert.Equal(t, 1, ap.configurationCount(), "restart should not reconfigure a matching AP")
+	assert.Equal(t, 2, ap.configurationCount(), "restart should not reconfigure a matching AP")
 
 	// Fields and tables from full Cheesy Arena survive.
 	require.Nil(t, database.Close())
@@ -248,6 +282,7 @@ func TestEndToEnd(t *testing.T) {
 	assert.Contains(t, records, `"TbaSecret":"secret"`)
 	assert.Contains(t, records, `"Nickname":"The Cheesy Poofs"`)
 	assert.Contains(t, records, `"WpaKey":"newkey254"`)
+	assert.Contains(t, records, `"DefaultWpaKey":"fieldkey123"`)
 	assert.Contains(t, records, `Match/1 {"Id":1,"ShortName":"Q1"}`)
 	note("== Log tail\n%s", strings.Join(logTail.Lines(), "\n"))
 }

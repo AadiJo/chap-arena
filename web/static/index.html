@@ -1,351 +1,250 @@
 <!DOCTYPE html>
 <!--
-Single-page UI for assigning teams to driver stations and editing network settings. Talks to the JSON API in web.go.
+The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars) and network
+settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract);
+/demo.js fakes the API when the URL has ?demo, for previewing without field hardware.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cheesy Arena Radio Config</title>
+<title>FMS Config</title>
+<link rel="icon" href="/favicon.png">
+<script src="/demo.js"></script>
+<script src="/app.js" defer></script>
 <style>
+  :root {
+    --bg: #000; --panel: #0b0b0b; --fg: #fff; --fg2: #a3a3a3; --fg3: #5e5e5e; --line: #1c1c1c; --line2: #2e2e2e; --fill: #161616;
+    /* True black can't take a darker shadow, so dark surfaces lift with a gradient and a thin top-left highlight. */
+    --neu-hi: #1c1c1c; --neu-lo: #0d0d0d;
+    --neu-raise: inset 1px 1px 0 rgb(255 255 255 / .08), 3px 3px 8px rgb(0 0 0 / .9), -1px -1px 3px rgb(255 255 255 / .05);
+    --ind-ok: #34d399; --ind-ok-fg: #6ee7b7; --ind-warn: #fbbf24; --ind-warn-fg: #fcd34d; --ind-bad: #f87171; --ind-bad-fg: #fca5a5; --ind-tint: 22%;
+    --red: #ff4d5e; --red-tint: #1a0709; --blue: #4d8dff; --blue-tint: #060e1f;
+    --ok: #3ddc84; --warn: #ffb020; --bad: #ff4d5e;
+    color-scheme: dark;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #000; color: #fff; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; }
-  .bar { display: flex; align-items: center; gap: 16px; padding: 8px 12px; border-bottom: 1px solid #222; flex-wrap: wrap; }
-  .bar b { font-weight: 600; }
-  .bar a { color: #fff; text-decoration: none; opacity: .6; }
-  .bar a.on { opacity: 1; }
-  .sp { flex: 1; }
-  .ok { color: #3fb950; } .bad { color: #f85149; } .warn { color: #d29922; } .dim { color: #888; }
-  .red { color: #ff6b6b; } .blue { color: #6ea8ff; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #1a1a1a; white-space: nowrap; }
-  th { font-weight: 500; color: #aaa; font-size: 12px; }
-  input, select, textarea { background: #000; color: #fff; border: 1px solid #444; padding: 5px 8px; font: inherit; width: 100%; }
-  textarea { font: 12px/1.4 ui-monospace, Consolas, monospace; }
-  input.num { width: 90px; }
-  input.dirty { border-color: #d29922; }
-  input[type=checkbox] { width: auto; justify-self: start; }
-  button { background: #fff; color: #000; border: 0; padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer; }
-  button.ghost { background: #000; color: #fff; border: 1px solid #444; font-weight: 400; }
-  button:disabled { opacity: .5; cursor: default; }
-  .row { display: flex; gap: 12px; align-items: center; padding: 10px 12px; flex-wrap: wrap; }
-  .log { font: 12px/1.5 ui-monospace, Consolas, monospace; padding: 8px 12px; color: #bbb; border-top: 1px solid #222;
-    height: 240px; overflow: auto; white-space: pre-wrap; margin: 0; }
-  .scroll { overflow-x: auto; }
-  .form { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; padding: 12px; max-width: 640px; }
-  .form label { color: #ccc; align-self: center; }
-  fieldset { border: 0; border-top: 1px solid #222; margin: 0; padding: 12px 0 0; }
-  legend { font-weight: 600; padding: 0 12px; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
   [hidden] { display: none !important; }
-  @media (max-width: 700px) { .form { grid-template-columns: 1fr; } }
+  [data-state=ok] { color: var(--ok); } [data-state=warn] { color: var(--warn); } [data-state=bad] { color: var(--bad); } [data-state=dim] { color: var(--fg3); }
+
+  /* Equal side columns keep the tab switch centered on the page no matter how wide the title or status get. */
+  body > header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 28px; padding: 12px 28px; }
+  .brand { font-size: 14px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+  .hw { justify-self: end; }
+
+  /* Two equal tabs over a pill that slides to the current view (body[data-view] is set by app.js). */
+  nav { display: grid; grid-template-columns: 1fr 1fr; background: var(--line); padding: 3px; border-radius: 9px; position: relative; isolation: isolate; }
+  nav::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 6px; background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .12); transition: transform .25s cubic-bezier(.3, .7, .2, 1); }
+  body[data-view=settings] nav::before { transform: translateX(100%); }
+  /* On black the drop shadow only darkens the gap under the pill, making it look off-center. */
+  nav::before { box-shadow: none; }
+  /* 4px/6px instead of 5px/5px: the box centers cap height, but the eye centers the lowercase letters, which sit low. */
+  nav a { color: var(--fg2); text-decoration: none; padding: 4px 16px 6px; text-align: center; font-weight: 500; font-size: 13px; transition: color .2s; }
+  nav a[aria-current] { color: var(--fg); }
+
+  /* The incoming view slides in from the side its tab is on. One-shot, so nothing repaints while idle. */
+  body[data-view=stations] #stations-view { animation: from-left .28s cubic-bezier(.3, .7, .2, 1); }
+  body[data-view=settings] #settings-view { animation: from-right .28s cubic-bezier(.3, .7, .2, 1); }
+  @keyframes from-left { from { opacity: 0; transform: translateX(-24px); } }
+  @keyframes from-right { from { opacity: 0; transform: translateX(24px); } }
+  @media (prefers-reduced-motion: reduce) { nav::before, #stations-view, #settings-view, dialog, dialog::backdrop { transition: none; animation: none !important; } }
+  .sp { flex: 1; }
+  /* Hardware indicators: a soft tint of the state color with the icon in a stronger shade of it, from the state app.js
+     puts on the <b> inside .tip (ACTIVE ok, CONFIGURING warn, ERROR bad, anything else neutral grey). The --ind-*
+     palette is separate from the page's so it can be tuned alone. Static on purpose: no pulsing. */
+  .hw { display: flex; gap: 8px; }
+  /* Raised (neumorphic) chips. The state color is blended into the surface gradient, so the chip reads as tinted
+     material coming out of the page rather than a flat badge. */
+  .ind { --base: var(--neu-lo); --icon: var(--fg2); position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--icon); outline: none; background: linear-gradient(145deg, color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-hi)), color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-lo))); box-shadow: var(--neu-raise); transition: color .2s; }
+  .ind:has([data-state=dim]) { --base: var(--neu-lo); }
+  .ind:has([data-state=ok]) { --base: var(--ind-ok); --icon: var(--ind-ok-fg); }
+  .ind:has([data-state=warn]) { --base: var(--ind-warn); --icon: var(--ind-warn-fg); }
+  .ind:has([data-state=bad]) { --base: var(--ind-bad); --icon: var(--ind-bad-fg); }
+  .ind:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--fg2); }
+  .ind svg { width: 18px; height: 18px; stroke-width: 2.4; }
+  /* Tooltip, e.g. "AP - ACTIVE", in the page's own colors. Kept in the accessibility tree (opacity, not display). */
+  .tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 10; padding: 6px 10px; border-radius: 8px; background: var(--panel); color: var(--fg); border: 1px solid var(--line2); font-size: 12px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; box-shadow: 0 8px 24px rgb(0 0 0 / .18); opacity: 0; transform: translateY(-3px); pointer-events: none; transition: opacity .12s, transform .12s; }
+  .tip b { font-weight: 600; color: inherit; }
+  .ind:hover .tip, .ind:focus-visible .tip { opacity: 1; transform: none; }
+
+  /* The stations view sits centered in the space below the header. Bottom padding roughly matches the header height,
+     so it reads as centered in the window. Settings is taller than the screen, so it stays top-aligned. */
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  main { flex: 1; display: flex; flex-direction: column; width: 100%; padding: 0 28px 60px; max-width: 1280px; margin: 0 auto; }
+  #stations-view { margin-block: auto; }
+
+  .field { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .alliance { background: var(--panel); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .banner { height: 38px; }
+  .alliance.red .banner { background: var(--red); } .alliance.blue .banner { background: var(--blue); }
+
+  .station { display: grid; grid-template-columns: 56px 1fr auto; grid-template-rows: auto auto; column-gap: 16px; padding: 16px 20px; border-top: 1px solid var(--line); align-items: center; }
+  .station:first-child { border-top: 0; }
+  .station .name { grid-row: 1 / 3; font-size: 22px; font-weight: 800; letter-spacing: -.02em; }
+  [data-alliance=red] .name { color: var(--red); } [data-alliance=blue] .name { color: var(--blue); }
+  .station input[data-field=team] { font-size: 34px; font-weight: 700; letter-spacing: -.03em; line-height: 1; padding: 2px 6px; margin-left: -7px; width: 150px; }
+  .station input[data-field=wpaKey] { font: 12px ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; color: var(--fg2); padding: 3px 6px; margin-left: -7px; width: 220px; }
+  .station[data-dirty=true] { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 9%, transparent), transparent 60%); }
+  input.dirty { color: var(--warn) !important; }
+
+  .link { grid-row: 1 / 3; grid-column: 3; display: grid; justify-items: end; gap: 4px; text-align: right; }
+  .radio { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 13px; }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 16px; }
+  .bars i { width: 4px; border-radius: 1px; background: var(--line2); }
+  .bars i:nth-child(1) { height: 25%; } .bars i:nth-child(2) { height: 50%; } .bars i:nth-child(3) { height: 75%; } .bars i:nth-child(4) { height: 100%; }
+  [data-quality="1"] .bars i:nth-child(-n+1) { background: var(--bad); }
+  [data-quality="2"] .bars i:nth-child(-n+2) { background: var(--warn); }
+  [data-quality="3"] .bars i:nth-child(-n+3), [data-quality="4"] .bars i { background: var(--ok); }
+  .stats { font-size: 12px; color: var(--fg2); display: flex; gap: 12px; }
+  .stats span[data-field] { color: var(--fg); font-weight: 500; }
+  /* Link quality word: muted when fine, colored to match the bars when it's warning (amber) or caution (red). */
+  .stats [data-field=quality][data-state=ok] { color: var(--fg2); }
+  .stats [data-field=quality][data-state=warn] { color: var(--warn); }
+  .stats [data-field=quality][data-state=bad] { color: var(--bad); }
+  .stats label { color: var(--fg3); margin-right: 3px; }
+  .station:not([data-radio=linked]) .stats { visibility: hidden; }
+  /* Linked is the normal case; the bars say enough. Other states (no link, configuring, not applied) keep their text. */
+  .station[data-radio=linked] [data-field=radio] { display: none; }
+
+  input, select, textarea { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 6px; outline: none; }
+  input::placeholder { color: var(--fg3); }
+  .station input:hover { background: var(--bg); }
+  input:focus, select:focus, textarea:focus { background: var(--bg); border-color: var(--line2); }
+
+  .bar { display: flex; align-items: center; gap: 10px; margin: 16px 0 0; }
+  button { font: inherit; font-weight: 600; font-size: 14px; height: 40px; padding: 0 22px; border-radius: 10px; border: 0; cursor: pointer; background: var(--line); color: var(--fg); }
+  button.primary { background: var(--fg); color: var(--bg); }
+  body[data-dirty=true] #apply { background: var(--warn); color: #000; }
+  button:disabled { opacity: .5; cursor: default; }
+  #apply-message, #settings-message { font-weight: 500; margin-left: 6px; }
+  button svg { width: 16px; height: 16px; display: block; }
+  button.icon { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; border-radius: 8px; background: transparent; color: var(--warn); }
+  button.icon:hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  #revert { margin-left: -8px; }
+  button.log { margin-left: auto; }
+
+  /* Log popup. The dialog has no padding so a click on it (rather than .sheet) means the backdrop was clicked. */
+  dialog { padding: 0; border: 0; background: transparent; color: var(--fg); width: min(960px, calc(100vw - 48px)); max-height: none; }
+  dialog::backdrop { background: rgb(0 0 0 / .55); animation: fade .18s ease-out; }
+  dialog[open] { animation: pop .18s cubic-bezier(.3, .7, .2, 1); }
+  /* app.js sets data-closing and waits for these to finish before closing, so the exit mirrors the entrance. */
+  /* Separate keyframes, not "pop reverse": reusing a finished animation's name doesn't replay it. */
+  dialog[data-closing] { animation: pop-out .14s ease-in forwards; }
+  dialog[data-closing]::backdrop { animation: fade-out .14s ease-in forwards; }
+  @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+  @keyframes pop-out { to { opacity: 0; transform: translateY(8px) scale(.98); } }
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes fade-out { to { opacity: 0; } }
+  .sheet { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 20px 60px rgb(0 0 0 / .35); }
+  .sheet header { display: flex; align-items: center; padding: 12px 12px 12px 20px; gap: 12px; border-bottom: 1px solid var(--line); }
+  .sheet h2 { margin: 0; font-size: 14px; font-weight: 700; }
+  .sheet header button { margin-left: auto; width: 32px; height: 32px; padding: 0; display: grid; place-items: center; background: transparent; color: var(--fg2); border-radius: 8px; }
+  .sheet header button:hover { background: var(--line); color: var(--fg); }
+  #log { margin: 0; height: min(60vh, 560px); overflow: auto; white-space: pre-wrap; padding: 14px 20px 18px; font: 12px/1.6 ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; color: var(--fg2); }
+
+  .settings { max-width: 760px; margin: 0 auto; }
+  /* Section titles: plain sentence case at reading size, no tracked-out small caps. */
+  .caption { font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--fg); margin: 28px 4px 10px; }
+  .caption:first-child { margin-top: 4px; }
+  .list { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .row { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: center; padding: 10px 16px; position: relative; min-height: 48px; }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
+  .row.top { align-items: start; } .row.top label { padding-top: 6px; }
+  .row input:not([type=checkbox]), .row select { background: var(--fill); padding: 6px 10px; width: 100%; max-width: 320px; justify-self: end; text-align: right; }
+  .row select { text-align-last: right; }
+  .row textarea { background: var(--fill); padding: 8px 10px; width: 100%; }
+  textarea { font: 12px/1.5 ui-monospace, "SF Mono", Consolas, monospace; resize: vertical; }
+  input[type=checkbox] { appearance: none; width: 40px; height: 24px; border-radius: 12px; background: var(--line2); border: 0; padding: 0; margin: 0; justify-self: end; position: relative; cursor: pointer; transition: background .15s; }
+  input[type=checkbox]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .3); transition: transform .15s; }
+  input[type=checkbox]:checked { background: var(--ok); }
+  input[type=checkbox]:checked::after { transform: translateX(16px); }
+  /* Save stays pinned to the bottom of the window while the settings scroll under it; the fade keeps rows readable. */
+  .settings .bar { justify-content: flex-end; position: sticky; bottom: 0; z-index: 5; margin: 8px 0 0; padding: 28px 0 20px; background: linear-gradient(to top, var(--bg) 60%, transparent); }
+  .settings .bar #settings-message { margin-right: auto; }
+
+  @media (max-width: 900px) { .field { grid-template-columns: 1fr; } .hw { width: 100%; } .row { grid-template-columns: 1fr; gap: 6px; } .row input:not([type=checkbox]), .row select { max-width: none; justify-self: stretch; text-align: left; } }
 </style>
 </head>
 <body>
-<main>
-  <div class="bar">
-    <b>Radio Config</b>
-    <a href="#" id="nav-stations">Stations</a>
-    <a href="#settings" id="nav-settings">Settings</a>
-    <span class="sp"></span>
-    <span>AP <span id="ap-status" class="dim">-</span></span>
-    <span>Switch <span id="switch-status" class="dim">-</span> <span id="last-applied" class="dim"></span></span>
+<header>
+  <span class="brand">Field Management System</span>
+  <nav><a href="#" data-nav="stations">Stations</a><a href="#settings" data-nav="settings">Settings</a></nav>
+  <div class="hw">
+    <!-- Icons: Lucide (lucide.dev, ISC license), inlined so they work without internet. -->
+    <span class="ind" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6"/><path d="M10.01 18H10"/><path d="M15 10v4"/><path d="M17.84 7.17a4 4 0 0 0-5.66 0"/><path d="M20.66 4.34a8 8 0 0 0-11.31 0"/></svg>
+      <span class="tip" role="tooltip">AP - <b id="ap-status"></b></span>
+    </span>
+    <span class="ind" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8v1"/><path d="M14 8v1"/><path d="M18 8v1"/><path d="M19 17a2 2 0 00-1.765 1.059l-.47.882A2 2 0 0115 20H9a2 2 0 01-1.765-1.059l-.47-.882A2 2 0 005 17H4a2 2 0 01-2-2V6a2 2 0 012-2h16a2 2 0 012 2v9a2 2 0 01-2 2z"/><path d="M6 8v1"/></svg>
+      <span class="tip" role="tooltip">Switch - <b id="switch-status"></b></span>
+    </span>
   </div>
+</header>
 
+<main>
   <section id="stations-view">
-    <div class="scroll">
-      <table>
-        <thead>
-          <tr><th>Station</th><th>Team</th><th>Password</th><th>Radio</th><th>SNR</th><th>Rx / Tx Mbps</th><th>Quality</th></tr>
-        </thead>
-        <tbody id="stations"></tbody>
-      </table>
+    <div class="field">
+      <div class="alliance red" aria-label="Red alliance"><div class="banner"></div><div class="slots" data-slot="red"></div></div>
+      <div class="alliance blue" aria-label="Blue alliance"><div class="banner"></div><div class="slots" data-slot="blue"></div></div>
     </div>
-    <div class="row">
-      <button id="apply">Apply</button>
-      <button class="ghost" id="clear">Clear all</button>
+    <template id="station-template">
+      <div class="station">
+        <span class="name" data-field="name"></span>
+        <input data-field="team" inputmode="numeric" placeholder="----" aria-label="Team">
+        <input data-field="wpaKey" placeholder="no WPA key" spellcheck="false" aria-label="WPA key">
+        <div class="link">
+          <span class="radio"><span data-field="radio"></span><span class="bars"><i></i><i></i><i></i><i></i></span></span>
+          <span class="stats"><span data-field="quality"></span></span>
+        </div>
+      </div>
+    </template>
+    <div class="bar">
+      <button class="primary" id="apply">Apply</button>
+      <button id="clear">Clear all</button>
       <span id="apply-message"></span>
+      <button class="icon" id="revert" hidden title="Discard unapplied changes" aria-label="Discard unapplied changes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+      </button>
+      <button class="log" data-log-open>Log</button>
     </div>
-    <pre class="log" id="log"></pre>
+    <dialog id="log-dialog" aria-labelledby="log-title">
+      <div class="sheet">
+        <header>
+          <h2 id="log-title">Log</h2>
+          <button type="button" data-log-close aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </header>
+        <pre id="log"></pre>
+      </div>
+    </dialog>
   </section>
 
-  <section id="settings-view" hidden>
-    <fieldset><legend>Access point</legend>
-      <div class="form">
-        <label for="ApAddress">Address</label><input id="ApAddress" placeholder="10.0.100.2">
-        <label for="ApPassword">API password</label><input id="ApPassword" type="password">
-        <label for="ApChannel">Channel (6 GHz)</label><select id="ApChannel"></select>
-      </div>
-    </fieldset>
-    <fieldset><legend>Switch</legend>
-      <div class="form">
-        <label for="SwitchAddress">Address</label><input id="SwitchAddress" placeholder="10.0.100.3">
-        <label for="SwitchPassword">Password</label><input id="SwitchPassword" type="password">
-      </div>
-    </fieldset>
-    <fieldset><legend>SCC switches</legend>
-      <div class="form">
-        <label for="SCCManagementEnabled">Enabled</label><input id="SCCManagementEnabled" type="checkbox">
-        <label for="RedSCCAddress">Red address</label><input id="RedSCCAddress" placeholder="10.0.100.48">
-        <label for="BlueSCCAddress">Blue address</label><input id="BlueSCCAddress" placeholder="10.0.100.49">
-        <label for="SCCUsername">Username</label><input id="SCCUsername" placeholder="admin">
-        <label for="SCCPassword">Password</label><input id="SCCPassword" type="password">
-        <label for="SCCUpCommands">Enable commands</label><textarea id="SCCUpCommands" rows="7"></textarea>
-        <label for="SCCDownCommands">Disable commands</label><textarea id="SCCDownCommands" rows="7"></textarea>
-      </div>
-    </fieldset>
-    <div class="row"><button id="save-settings">Save</button><span id="settings-message"></span></div>
+  <section id="settings-view" class="settings" hidden>
+    <div class="caption">Access point</div>
+    <div class="list">
+      <div class="row"><label for="ApAddress">Address</label><input id="ApAddress" placeholder="10.0.100.2"></div>
+      <div class="row"><label for="ApPassword">API password</label><input id="ApPassword" type="password"></div>
+      <div class="row"><label for="ApChannel">Channel (6 GHz)</label><select id="ApChannel"></select></div>
+      <div class="row"><label for="DefaultWpaKey">Default WPA key</label><input id="DefaultWpaKey" placeholder="none" spellcheck="false"></div>
+    </div>
+    <div class="caption">Switch</div>
+    <div class="list">
+      <div class="row"><label for="SwitchAddress">Address</label><input id="SwitchAddress" placeholder="10.0.100.3"></div>
+      <div class="row"><label for="SwitchPassword">Password</label><input id="SwitchPassword" type="password"></div>
+    </div>
+    <div class="caption">SCC switches</div>
+    <div class="list">
+      <div class="row"><label for="SCCManagementEnabled">Enabled</label><input id="SCCManagementEnabled" type="checkbox"></div>
+      <div class="row"><label for="RedSCCAddress">Red address</label><input id="RedSCCAddress" placeholder="10.0.100.48"></div>
+      <div class="row"><label for="BlueSCCAddress">Blue address</label><input id="BlueSCCAddress" placeholder="10.0.100.49"></div>
+      <div class="row"><label for="SCCUsername">Username</label><input id="SCCUsername" placeholder="admin"></div>
+      <div class="row"><label for="SCCPassword">Password</label><input id="SCCPassword" type="password"></div>
+      <div class="row top"><label for="SCCUpCommands">Enable commands</label><textarea id="SCCUpCommands" rows="7"></textarea></div>
+      <div class="row top"><label for="SCCDownCommands">Disable commands</label><textarea id="SCCDownCommands" rows="7"></textarea></div>
+    </div>
+    <div class="bar"><span id="settings-message"></span><button class="primary" id="save-settings">Save</button></div>
   </section>
 </main>
-
-<script>
-"use strict";
-
-const stationNames = ["R1", "R2", "R3", "B1", "B2", "B3"];
-const qualityNames = ["-", "caution", "warning", "good", "excellent"];
-const qualityClasses = ["dim", "bad", "warn", "ok", "ok"];
-const settingsFields = [
-  "ApAddress", "ApPassword", "ApChannel", "SwitchAddress", "SwitchPassword", "SCCManagementEnabled",
-  "RedSCCAddress", "BlueSCCAddress", "SCCUsername", "SCCPassword", "SCCUpCommands", "SCCDownCommands",
-];
-const $ = (id) => document.getElementById(id);
-
-// Last status from the server; its assignments are what the inputs are compared against for dirty state.
-let lastStatus = null;
-const rows = [];
-
-async function api(method, path, body) {
-  const response = await fetch(path, {
-    method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const json = await response.json();
-  if (!response.ok) throw new Error(json.error ?? response.statusText);
-  return json;
-}
-
-function setText(element, text, className) {
-  element.textContent = text;
-  element.className = className ?? "";
-}
-
-function buildStationRows() {
-  const tbody = $("stations");
-  stationNames.forEach((name, i) => {
-    const tr = document.createElement("tr");
-    const cell = () => tr.appendChild(document.createElement("td"));
-    setText(cell(), name, name.startsWith("R") ? "red" : "blue");
-    const team = cell().appendChild(document.createElement("input"));
-    team.className = "num";
-    team.inputMode = "numeric";
-    const wpaKey = cell().appendChild(document.createElement("input"));
-    wpaKey.placeholder = "empty";
-    wpaKey.spellcheck = false;
-    const row = { team, wpaKey, radio: cell(), snr: cell(), rates: cell(), quality: cell() };
-    rows.push(row);
-    tbody.appendChild(tr);
-
-    team.addEventListener("input", () => renderRow(i));
-    wpaKey.addEventListener("input", () => renderRow(i));
-    team.addEventListener("change", () => prefillWpaKey(i));
-    // Enter applies; from the team field it waits for the password prefill first.
-    team.addEventListener("keydown", async (event) => {
-      if (event.key !== "Enter") return;
-      await prefillWpaKey(i);
-      apply();
-    });
-    wpaKey.addEventListener("keydown", (event) => { if (event.key === "Enter") apply(); });
-  });
-}
-
-// Fills the password from event.db when a team number is entered, if that team has one stored.
-async function prefillWpaKey(i) {
-  const teamId = Number(rows[i].team.value);
-  if (!teamId) return;
-  try {
-    const team = await api("GET", `/api/teams/${teamId}`);
-    if (Number(rows[i].team.value) === teamId && team.wpaKey) rows[i].wpaKey.value = team.wpaKey;
-  } catch {
-    // Team isn't in the database yet; the typed password will be saved on apply.
-  }
-  renderRow(i);
-}
-
-function inputAssignment(i) {
-  const teamId = Number(rows[i].team.value.trim()) || 0;
-  return { teamId, wpaKey: teamId ? rows[i].wpaKey.value : "" };
-}
-
-function isDirty(i) {
-  const applied = lastStatus?.stations[i].assignment ?? { teamId: 0, wpaKey: "" };
-  const current = inputAssignment(i);
-  return current.teamId !== applied.teamId || current.wpaKey !== applied.wpaKey;
-}
-
-function loadInputsFromStatus() {
-  lastStatus.stations.forEach((station, i) => {
-    rows[i].team.value = station.assignment.teamId || "";
-    rows[i].wpaKey.value = station.assignment.wpaKey;
-  });
-}
-
-function renderRow(i) {
-  const row = rows[i];
-  const station = lastStatus?.stations[i];
-  const dirty = isDirty(i);
-  row.team.classList.toggle("dirty", dirty);
-  row.wpaKey.classList.toggle("dirty", dirty);
-
-  const assignment = station?.assignment ?? { teamId: 0 };
-  const wifi = station?.wifi;
-  const blank = () => {
-    for (const element of [row.snr, row.rates, row.quality]) setText(element, "-", "dim");
-  };
-  if (dirty) {
-    setText(row.radio, "not applied", "dim");
-    blank();
-  } else if (!assignment.teamId) {
-    setText(row.radio, "-", "dim");
-    blank();
-  } else if (!wifi || wifi.TeamId !== assignment.teamId) {
-    setText(row.radio, "configuring", "warn");
-    blank();
-  } else if (!wifi.RadioLinked) {
-    setText(row.radio, "no link", "bad");
-    blank();
-  } else {
-    setText(row.radio, "linked", "ok");
-    setText(row.snr, String(wifi.SignalNoiseRatio), wifi.SignalNoiseRatio < 25 ? "warn" : "");
-    setText(row.rates, `${wifi.RxRate.toFixed(0)} / ${wifi.TxRate.toFixed(0)}`);
-    const quality = wifi.ConnectionQuality;
-    setText(row.quality, qualityNames[quality] ?? "-", qualityClasses[quality] ?? "dim");
-  }
-}
-
-function hardwareClass(status) {
-  if (status === "ACTIVE") return "ok";
-  if (status === "ERROR") return "bad";
-  if (status === "CONFIGURING") return "warn";
-  return "dim";
-}
-
-function renderStatus() {
-  setText($("ap-status"), lastStatus.accessPointStatus, hardwareClass(lastStatus.accessPointStatus));
-  setText($("switch-status"), lastStatus.switchStatus, hardwareClass(lastStatus.switchStatus));
-  const applied = new Date(lastStatus.lastApplied);
-  setText($("last-applied"), applied.getFullYear() > 1 ? `applied ${applied.toLocaleTimeString()}` : "", "dim");
-  rows.forEach((_, i) => renderRow(i));
-
-  const dirtyCount = rows.filter((_, i) => isDirty(i)).length;
-  const message = $("apply-message");
-  if (!message.dataset.sticky) {
-    setText(message, dirtyCount ? `${dirtyCount} unapplied change${dirtyCount === 1 ? "" : "s"}` : "", "warn");
-  }
-
-  const log = $("log");
-  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-  const text = lastStatus.log.join("\n");
-  if (log.textContent !== text) {
-    log.textContent = text;
-    if (atBottom) log.scrollTop = log.scrollHeight;
-  }
-}
-
-function showApplyMessage(text, className) {
-  const message = $("apply-message");
-  setText(message, text, className);
-  message.dataset.sticky = "1";
-  setTimeout(() => delete message.dataset.sticky, 4000);
-}
-
-async function apply() {
-  const button = $("apply");
-  button.disabled = true;
-  try {
-    const assignments = stationNames.map((_, i) => inputAssignment(i));
-    lastStatus = await api("PUT", "/api/stations", assignments);
-    loadInputsFromStatus();
-    showApplyMessage("Applied", "ok");
-  } catch (error) {
-    showApplyMessage(error.message, "bad");
-    lastStatus = await api("GET", "/api/status").catch(() => lastStatus);
-  } finally {
-    button.disabled = false;
-    if (lastStatus) renderStatus();
-  }
-}
-
-async function poll() {
-  try {
-    const first = lastStatus === null;
-    lastStatus = await api("GET", "/api/status");
-    if (first) loadInputsFromStatus();
-    renderStatus();
-  } catch (error) {
-    setText($("ap-status"), "app unreachable", "bad");
-  } finally {
-    setTimeout(poll, 1000);
-  }
-}
-
-// Settings view.
-
-function buildChannelOptions(current) {
-  const select = $("ApChannel");
-  select.replaceChildren();
-  const channels = Array.from({ length: 29 }, (_, i) => 5 + i * 8);
-  if (!channels.includes(current)) channels.unshift(current);
-  for (const channel of channels) select.add(new Option(String(channel), String(channel)));
-  select.value = String(current);
-}
-
-async function loadSettings() {
-  const settings = await api("GET", "/api/settings");
-  buildChannelOptions(settings.ApChannel);
-  for (const field of settingsFields) {
-    const input = $(field);
-    if (input.type === "checkbox") input.checked = settings[field];
-    else if (field !== "ApChannel") input.value = settings[field];
-  }
-}
-
-async function saveSettings() {
-  const settings = {};
-  for (const field of settingsFields) {
-    const input = $(field);
-    settings[field] = input.type === "checkbox" ? input.checked : field === "ApChannel" ? Number(input.value) : input.value;
-  }
-  try {
-    await api("PUT", "/api/settings", settings);
-    setText($("settings-message"), "Saved", "ok");
-  } catch (error) {
-    setText($("settings-message"), error.message, "bad");
-  }
-}
-
-function route() {
-  const onSettings = location.hash === "#settings";
-  $("stations-view").hidden = onSettings;
-  $("settings-view").hidden = !onSettings;
-  $("nav-stations").classList.toggle("on", !onSettings);
-  $("nav-settings").classList.toggle("on", onSettings);
-  if (onSettings) {
-    setText($("settings-message"), "");
-    loadSettings().catch((error) => setText($("settings-message"), error.message, "bad"));
-  }
-}
-
-buildStationRows();
-$("apply").addEventListener("click", apply);
-$("clear").addEventListener("click", () => {
-  for (const row of rows) row.team.value = row.wpaKey.value = "";
-  if (lastStatus) renderStatus();
-});
-$("save-settings").addEventListener("click", saveSettings);
-window.addEventListener("hashchange", route);
-route();
-poll();
-</script>
 </body>
 </html>

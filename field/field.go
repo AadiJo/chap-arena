@@ -108,8 +108,14 @@ func (field *Field) Settings() model.EventSettings {
 }
 
 // Saves the network settings and rebuilds the hardware clients. It does not push anything to the hardware; the next
-// apply (or the AP monitoring loop) uses the new settings.
+// apply (or the AP monitoring loop) uses the new settings. Returns a ValidationError, saving nothing, if the default WPA
+// key isn't a usable key.
 func (field *Field) UpdateSettings(settings model.EventSettings) error {
+	if key := settings.DefaultWpaKey; key != "" && (len(key) < minWpaKeyLength || len(key) > maxWpaKeyLength) {
+		return ValidationError(
+			fmt.Sprintf("default password must be %d to %d characters", minWpaKeyLength, maxWpaKeyLength),
+		)
+	}
 	field.mutex.Lock()
 	defer field.mutex.Unlock()
 	settings.Id = field.settings.Id
@@ -132,8 +138,17 @@ func (field *Field) TeamWpaKey(teamId int) (string, bool, error) {
 }
 
 // Validates and saves the assignment for all six stations, then pushes it to the AP (synchronously) and the switch
-// (in the background, since the switch takes several seconds). New WPA keys are saved to each team's database record.
+// (in the background, since the switch takes several seconds). Assigned stations with a blank WPA key get the default
+// key from settings. New WPA keys are saved to each team's database record.
 func (field *Field) Apply(assignments [6]Assignment) error {
+	field.mutex.Lock()
+	defaultWpaKey := field.settings.DefaultWpaKey
+	field.mutex.Unlock()
+	for i := range assignments {
+		if assignments[i].TeamId != 0 && assignments[i].WpaKey == "" {
+			assignments[i].WpaKey = defaultWpaKey
+		}
+	}
 	if err := validateAssignments(assignments); err != nil {
 		return err
 	}

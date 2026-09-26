@@ -5,13 +5,17 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
 	"github.com/Team254/cheesy-arena/web"
 	"io"
 	"log"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 const logTailLines = 200
@@ -21,6 +25,7 @@ const logTailLines = 200
 func main() {
 	dbPath := flag.String("db", "", "Path to the event database (default: event.db next to the executable)")
 	port := flag.Int("port", 8080, "HTTP port for the web UI")
+	noBrowser := flag.Bool("no-browser", false, "Don't open the web UI in a browser on startup")
 	flag.Parse()
 	if *dbPath == "" {
 		*dbPath = filepath.Join(executableDir(), "event.db")
@@ -45,10 +50,38 @@ func main() {
 		log.Fatalln("Error during startup: ", err)
 	}
 
-	go web.NewWeb(field, logTail).ServeWebInterface(*port)
+	// Bind the port before opening the browser so the page never loads ahead of the server.
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+	if err != nil {
+		log.Fatalln("Error starting web server: ", err)
+	}
+	go web.NewWeb(field, logTail).Serve(listener)
+	url := fmt.Sprintf("http://localhost:%d/", *port)
+	log.Printf("Web UI at %s", url)
+	if !*noBrowser {
+		openBrowser(url)
+	}
 
 	// Run the access point monitoring loop in the main thread.
 	field.Run()
+}
+
+// Opens url in the default browser. Failure (e.g. a headless machine) is logged, not fatal; the URL is in the log.
+func openBrowser(url string) {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		command = exec.Command("open", url)
+	default:
+		command = exec.Command("xdg-open", url)
+	}
+	if err := command.Start(); err != nil {
+		log.Printf("Couldn't open a browser (%v); open %s manually.", err, url)
+		return
+	}
+	go command.Wait()
 }
 
 func executableDir() string {
