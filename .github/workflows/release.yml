@@ -24,7 +24,7 @@ jobs:
           - { goos: linux, goarch: amd64, suffix: linux.x64 }
           - { goos: darwin, goarch: amd64, suffix: macos.x64 }
           - { goos: darwin, goarch: arm64, suffix: macos.m1 }
-          - { goos: windows, goarch: amd64, suffix: windows.x64 }
+          - { goos: windows, goarch: amd64, suffix: windows.x64, ext: .exe }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -37,7 +37,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir chap-arena
-          go build -o chap-arena/
+          go build -o "chap-arena/chap-arena${{ matrix.ext }}"
           cp LICENSE README.md switch_config.txt chap-arena/
           zip -r -X "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" chap-arena
 
