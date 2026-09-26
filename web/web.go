@@ -47,6 +47,7 @@ func (web *Web) newHandler() http.Handler {
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /api/status", web.statusHandler)
 	mux.HandleFunc("PUT /api/stations", web.stationsPutHandler)
+	mux.HandleFunc("PUT /api/driver-stations", web.driverStationsPutHandler)
 	mux.HandleFunc("GET /api/teams/{teamId}", web.teamGetHandler)
 	mux.HandleFunc("GET /api/settings", web.settingsGetHandler)
 	mux.HandleFunc("PUT /api/settings", web.settingsPutHandler)
@@ -72,6 +73,27 @@ func (web *Web) stationsPutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := web.field.Apply(assignments); err != nil {
 		writeFieldError(w, err)
+		return
+	}
+	web.statusHandler(w, r)
+}
+
+// Sets the driver station mode from {"mode": "off" | "disabled" | "enabled"} and responds with the new status. Responds
+// 400 for an unknown mode and 500 if the FMS ports couldn't be opened.
+func (web *Web) driverStationsPutHandler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Mode field.DriverStationMode `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if request.Mode == "" {
+		writeError(w, http.StatusBadRequest, errors.New("mode is required"))
+		return
+	}
+	if err := web.field.SetDriverStationMode(request.Mode); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	web.statusHandler(w, r)

@@ -11,11 +11,17 @@
 //
 // Nav links carry data-nav="stations" or data-nav="settings" and get aria-current="page" when active.
 //
+// FMS mode: buttons with data-ds-mode (off|disabled|enabled) set it and get aria-pressed="true" when current; body gets
+// data-ds-mode. Space sets disabled from anywhere but a text field while FMS is on.
+//
 // Stations are appended to #stations, or to [data-slot="red"] / [data-slot="blue"] when the page splits alliances.
 // The station template is cloned once per station. Its root element gets data-alliance (red|blue), data-radio
-// (idle|dirty|configuring|nolink|linked), data-quality (0-4) and data-dirty. Descendants with data-field set to name,
-// team, wpaKey, radio, snr, rates or quality are filled in (snr, rates and quality may be left out). Text outputs get
-// data-state (ok|warn|bad|dim) for styling.
+// (idle|dirty|configuring|nolink|linked), data-quality (0-4), data-dirty and data-robot (enabled|disabled by FMS, or none
+// while FMS is off or no robot is linked).
+// Descendants with data-field set to name, team, wpaKey, radio, snr, rates or quality are filled in (snr, rates and
+// quality may be left out). Optionally, a data-field="ds" container holding dsState, battery and trip shows the driver
+// station; it's hidden while FMS is off or the station has no team. Text outputs get data-state (ok|warn|bad|dim) for
+// styling.
 
 "use strict";
 
@@ -72,6 +78,10 @@ function buildStationRows() {
       snr: field("snr"),
       rates: field("rates"),
       quality: field("quality"),
+      ds: field("ds"),
+      dsState: field("dsState"),
+      battery: field("battery"),
+      trip: field("trip"),
     };
     rows.push(row);
     (document.querySelector(`[data-slot="${alliance}"]`) ?? $("stations")).appendChild(fragment);
@@ -153,8 +163,31 @@ const radioLabels = {
   linked: ["linked", "ok"],
 };
 
+// Fills a station's driver station line from the last status.
+function renderDriverStation(i) {
+  const row = rows[i];
+  const station = lastStatus?.stations[i];
+  const mode = lastStatus?.driverStationMode ?? "off";
+  const ds = station?.driverStation;
+  const hasRobot = mode !== "off" && Boolean(station?.assignment.teamId && ds?.connected && ds.robotLinked);
+  row.root.dataset.robot = !hasRobot ? "none" : ds.enabled ? "enabled" : "disabled";
+  if (!row.ds) return;
+  row.ds.hidden = mode === "off" || !station?.assignment.teamId;
+  if (row.ds.hidden) return;
+  if (!ds.connected) setText(row.dsState, "no DS", "dim");
+  else if (!ds.robotLinked) setText(row.dsState, "no robot", "bad");
+  else if (ds.enabled) setText(row.dsState, "enabled", "ok");
+  // Amber when the field is enabled but this robot isn't: it connected since Enabled was pressed.
+  else setText(row.dsState, "disabled", mode === "enabled" ? "warn" : undefined);
+  setText(row.battery, `${ds.batteryVoltage.toFixed(1)} V`);
+  row.battery.hidden = !ds.robotLinked;
+  setText(row.trip, `${ds.tripTimeMs} ms`);
+  row.trip.hidden = !ds.dsLinked;
+}
+
 function renderRow(i) {
   const row = rows[i];
+  renderDriverStation(i);
   const state = radioState(i);
   const dirty = state === "dirty";
   row.root.dataset.radio = state;
@@ -188,6 +221,10 @@ function hardwareState(status) {
 function renderStatus() {
   setText($("ap-status"), lastStatus.accessPointStatus, hardwareState(lastStatus.accessPointStatus));
   setText($("switch-status"), lastStatus.switchStatus, hardwareState(lastStatus.switchStatus));
+  document.body.dataset.dsMode = lastStatus.driverStationMode;
+  for (const button of document.querySelectorAll("[data-ds-mode]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.dsMode === lastStatus.driverStationMode));
+  }
   const applied = new Date(lastStatus.lastApplied);
   setText($("last-applied"), applied.getFullYear() > 1 ? `applied ${applied.toLocaleTimeString()}` : "", "dim");
   rows.forEach((_, i) => renderRow(i));
@@ -241,6 +278,15 @@ async function apply() {
   } finally {
     button.disabled = false;
     if (lastStatus) renderStatus();
+  }
+}
+
+async function setDriverStationMode(mode) {
+  try {
+    lastStatus = await api("PUT", "/api/driver-stations", { mode });
+    renderStatus();
+  } catch (error) {
+    showApplyMessage(error.message, "bad");
   }
 }
 
@@ -325,6 +371,29 @@ $("clear").addEventListener("click", () => {
   if (lastStatus) renderStatus();
 });
 $("save-settings").addEventListener("click", saveSettings);
+for (const button of document.querySelectorAll("[data-ds-mode]")) {
+  button.addEventListener("click", () => {
+    // Don't leave focus on the button, where Space would press it again.
+    button.blur();
+    setDriverStationMode(button.dataset.dsMode);
+  });
+}
+// Space disables every robot while FMS is on, except while typing in a text field. The matching keyup is swallowed too,
+// since that's when a focused button would activate.
+const isTextField = (target) => target.matches?.("input:not([type=checkbox]), textarea, select");
+let spaceDisabled = false;
+document.addEventListener("keydown", (event) => {
+  if (event.key !== " " || isTextField(event.target) || (lastStatus?.driverStationMode ?? "off") === "off") return;
+  event.preventDefault();
+  spaceDisabled = true;
+  if (!event.repeat) setDriverStationMode("disabled");
+});
+document.addEventListener("keyup", (event) => {
+  if (event.key === " " && spaceDisabled) {
+    event.preventDefault();
+    spaceDisabled = false;
+  }
+});
 // Enter in any single-line settings input saves, like Enter applies on the stations view.
 $("settings-view").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.matches("input:not([type=checkbox])")) saveSettings();

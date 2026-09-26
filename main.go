@@ -45,7 +45,7 @@ func main() {
 	if err != nil {
 		log.Fatalln("Error opening database: ", err)
 	}
-	field, err := field.New(database)
+	field, err := field.New(database, field.DefaultDriverStationPorts)
 	if err != nil {
 		log.Fatalln("Error during startup: ", err)
 	}

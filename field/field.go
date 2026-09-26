@@ -1,8 +1,9 @@
 // Copyright 2014 Team 254. All Rights Reserved.
 // Author: pat@patfairbank.com (Patrick Fairbank)
 //
-// Owns the field network hardware (access point, switch, SCC switches) and the team assigned to each driver station.
-// It never talks to driver stations, so teams can enable their robots themselves once their radio links.
+// Owns the field network hardware (access point, switch, SCC switches), the team assigned to each driver station, and
+// the optional FMS connection to the driver stations (see driver_station.go). That connection starts off, so teams can
+// enable their robots themselves once their radio links.
 
 package field
 
@@ -39,16 +40,18 @@ type Assignment struct {
 }
 
 type StationStatus struct {
-	Station    string                 `json:"station"`
-	Assignment Assignment             `json:"assignment"`
-	Wifi       network.TeamWifiStatus `json:"wifi"`
+	Station       string                 `json:"station"`
+	Assignment    Assignment             `json:"assignment"`
+	Wifi          network.TeamWifiStatus `json:"wifi"`
+	DriverStation DriverStationStatus    `json:"driverStation"`
 }
 
 type Status struct {
-	Stations          [6]StationStatus `json:"stations"`
-	AccessPointStatus string           `json:"accessPointStatus"`
-	SwitchStatus      string           `json:"switchStatus"`
-	LastApplied       time.Time        `json:"lastApplied"`
+	Stations          [6]StationStatus  `json:"stations"`
+	AccessPointStatus string            `json:"accessPointStatus"`
+	SwitchStatus      string            `json:"switchStatus"`
+	LastApplied       time.Time         `json:"lastApplied"`
+	DriverStationMode DriverStationMode `json:"driverStationMode"`
 }
 
 type Field struct {
@@ -66,14 +69,18 @@ type Field struct {
 	blueSCC       *network.SCCSwitch
 	wifiStatuses  [6]network.TeamWifiStatus
 
+	// Has its own lock, always taken after mutex when both are needed.
+	driverStations *driverStations
+
 	// Serializes switch reconfiguration so the last apply always wins.
 	switchMutex sync.Mutex
 }
 
 // Loads settings and the last applied station assignment from the database. The access point is told to expect that
-// assignment, so a restart leaves linked robots alone unless the AP has drifted.
-func New(database *model.Database) (*Field, error) {
-	field := Field{database: database}
+// assignment, so a restart leaves linked robots alone unless the AP has drifted. Driver stations will be listened for on
+// the given ports once SetDriverStationMode turns FMS on.
+func New(database *model.Database, driverStationPorts DriverStationPorts) (*Field, error) {
+	field := Field{database: database, driverStations: newDriverStations(driverStationPorts)}
 	settings, err := database.GetEventSettings()
 	if err != nil {
 		return nil, err
@@ -93,6 +100,7 @@ func New(database *model.Database) (*Field, error) {
 	}
 	field.loadSettings(*settings)
 	field.accessPoint.SetExpectedTeams(field.teams())
+	field.driverStations.setTeams(settings.StationTeamIds)
 	return &field, nil
 }
 
@@ -173,6 +181,7 @@ func (field *Field) Apply(assignments [6]Assignment) error {
 	}
 	field.assignments = assignments
 	field.lastApplied = time.Now()
+	field.driverStations.setTeams(field.settings.StationTeamIds)
 	teams := field.teams()
 	field.mutex.Unlock()
 
@@ -185,19 +194,27 @@ func (field *Field) Apply(assignments [6]Assignment) error {
 	return nil
 }
 
+// Turns the FMS connection to driver stations off, or on with every robot disabled or enabled. See DriverStationMode.
+func (field *Field) SetDriverStationMode(mode DriverStationMode) error {
+	return field.driverStations.setMode(mode)
+}
+
 func (field *Field) Status() Status {
 	field.mutex.Lock()
 	defer field.mutex.Unlock()
+	driverStationMode, driverStationStatuses := field.driverStations.status()
 	status := Status{
 		AccessPointStatus: field.accessPoint.Status,
 		SwitchStatus:      field.networkSwitch.Status,
 		LastApplied:       field.lastApplied,
+		DriverStationMode: driverStationMode,
 	}
 	for i := range status.Stations {
 		status.Stations[i] = StationStatus{
-			Station:    StationNames[i],
-			Assignment: field.assignments[i],
-			Wifi:       field.wifiStatuses[i],
+			Station:       StationNames[i],
+			Assignment:    field.assignments[i],
+			Wifi:          field.wifiStatuses[i],
+			DriverStation: driverStationStatuses[i],
 		}
 	}
 	return status

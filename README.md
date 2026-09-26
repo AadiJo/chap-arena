@@ -4,8 +4,9 @@ A stripped-down [Cheesy Arena](https://github.com/Team254/cheesy-arena) that onl
 team number and radio password on each driver station, hit Apply, and the access point and switch are set up for those
 teams. Nothing else about a match is run.
 
-This app never connects to the driver stations, so teams can enable and disable their own robots as soon as their
-radio links. Leave it running and change stations whenever someone new shows up.
+By default it doesn't talk to the driver stations, so teams can enable and disable their own robots as soon as their
+radio links. Turn FMS on from the header when you want to enable and disable every robot at once. Leave it running and
+change stations whenever someone new shows up.
 
 ## Running
 
@@ -35,6 +36,24 @@ with details on hover.
 
 The applied stations are saved, and on restart the access point is only reconfigured if it no longer matches them, so
 restarting the app doesn't kick robots off.
+
+## FMS mode
+
+The Off / Disabled / Enabled control in the header decides who controls the robots.
+
+- **Off** (the mode at every startup). Nothing listens for driver stations, so they stay in local mode and teams enable
+  their own robots. Switching to Off from another mode closes every driver station connection, handing control back.
+- **Disabled.** Driver stations connect to this app and every robot is disabled.
+- **Enabled.** Every robot connected at that moment is enabled, in teleop. A robot that connects later stays disabled,
+  shown in amber, until you press Enabled again.
+
+Space switches to Disabled from anywhere on the page except while typing in a text field. While FMS is on, each station
+shows whether its robot is enabled, plus battery voltage and round trip time. Applying new stations drops any driver
+station whose team moved, and it reconnects to its new station.
+
+Driver stations look for FMS at `10.0.100.5` on TCP 1750 and UDP 1160, so the computer running this app needs that
+address on the field network (the log warns when it doesn't). On Windows, allow the firewall prompt the first time you
+turn FMS on. If the app stops, driver stations stop hearing from it and disable their robots.
 
 ## Settings page
 

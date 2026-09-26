@@ -6,6 +6,10 @@
 // assigned radio shows "no link" until it associates and links a few seconds later. Settings and WPA keys live in
 // memory and reset on reload. Validation messages match field.validateAssignments and field.UpdateSettings, and a blank
 // key on an assigned station gets the default WPA key, as in field.Apply.
+//
+// FMS mode follows field/driver_station.go: it starts off; turning it on has driver stations connect one by one (B2's
+// never does, and R3's connects late enough to show a robot that missed Enable); Enabled enables whatever is connected;
+// off drops them all. Reassigning a station drops its driver station, which reconnects if the new team has one.
 
 "use strict";
 
@@ -31,6 +35,20 @@
   ];
   // Order and delay (ms after the AP is active) in which radios link, so they don't all flip at once.
   const linkDelays = [900, 2600, 1500, 400, 3400, 2000];
+  // Driver station each station gets once FMS is on: delay (ms) before it connects, battery and trip time. null never
+  // connects.
+  const dsProfiles = [
+    { delay: 600, BatteryVoltage: 12.6, TripTimeMs: 6 },
+    { delay: 1100, BatteryVoltage: 12.1, TripTimeMs: 9 },
+    { delay: 7000, BatteryVoltage: 12.4, TripTimeMs: 7 },
+    { delay: 1600, BatteryVoltage: 11.8, TripTimeMs: 11 },
+    null,
+    { delay: 900, BatteryVoltage: 12.9, TripTimeMs: 5 },
+  ];
+  const emptyDs = () => ({
+    connected: false, enabled: false, dsLinked: false, radioLinked: false, rioLinked: false, robotLinked: false,
+    batteryVoltage: 0, tripTimeMs: 0, missedPackets: 0,
+  });
 
   const emptyWifi = () => ({ TeamId: 0, RadioLinked: false, MBits: 0, RxRate: 0, TxRate: 0, SignalNoiseRatio: 0, ConnectionQuality: 0 });
   const linkedWifi = (i, teamId) => ({ ...emptyWifi(), TeamId: teamId, RadioLinked: true, MBits: 0.4, ...linkProfiles[i] });
@@ -43,8 +61,10 @@
         station,
         assignment: { teamId, wpaKey: teamId ? wpaKeys.get(teamId) : "" },
         wifi: teamId ? linkedWifi(i, teamId) : emptyWifi(),
+        driverStation: emptyDs(),
       };
     }),
+    driverStationMode: "off",
     accessPointStatus: "ACTIVE",
     switchStatus: "ACTIVE",
     lastApplied: new Date().toISOString(),
@@ -90,6 +110,51 @@
     setTimeout(() => { if (mine === generation) step(); }, ms);
   }
 
+  // Separate from generation: turning FMS off cancels pending driver station connections without touching the radios.
+  let dsGeneration = 0;
+
+  // Has a station's driver station connect after its delay, disabled like any new connection.
+  function connectLater(i) {
+    const profile = dsProfiles[i];
+    const teamId = state.stations[i].assignment.teamId;
+    if (!profile || !teamId || state.driverStationMode === "off") return;
+    const mine = dsGeneration;
+    setTimeout(() => {
+      const station = state.stations[i];
+      if (mine !== dsGeneration || station.assignment.teamId !== teamId || station.driverStation.connected) return;
+      station.driverStation = {
+        ...emptyDs(), connected: true, dsLinked: true, radioLinked: true, rioLinked: true, robotLinked: true,
+        batteryVoltage: profile.BatteryVoltage, tripTimeMs: profile.TripTimeMs,
+      };
+      log(`Team ${teamId}'s driver station connected to ${station.station} from 10.${Math.floor(teamId / 100)}.${teamId % 100}.5.`);
+    }, profile.delay);
+  }
+
+  function setDriverStationMode(mode) {
+    if (!["off", "disabled", "enabled"].includes(mode)) return [400, { error: `unknown driver station mode "${mode}"` }];
+    const wasOff = state.driverStationMode === "off";
+    state.driverStationMode = mode;
+    if (mode === "off") {
+      dsGeneration++;
+      state.stations.forEach((station) => { station.driverStation = emptyDs(); });
+      log("FMS off; teams control their own robots.");
+      return [200, state];
+    }
+    if (wasOff) {
+      log("Listening for driver stations on TCP 1750 and UDP 1160.");
+      state.stations.forEach((_, i) => connectLater(i));
+    }
+    state.stations.forEach((station) => {
+      if (station.driverStation.connected) station.driverStation.enabled = mode === "enabled";
+    });
+    if (mode === "disabled") log("FMS on; all robots disabled.");
+    else {
+      const connected = state.stations.filter((s) => s.driverStation.connected).map((s) => `${s.station}=${s.assignment.teamId}`);
+      log(`Robots enabled: ${connected.join(" ") || "none connected"}`);
+    }
+    return [200, state];
+  }
+
   function apply(assignments) {
     assignments = assignments.map((a) => (a.teamId && !a.wpaKey ? { ...a, wpaKey: settings.DefaultWpaKey } : a));
     const error = validate(assignments);
@@ -99,6 +164,13 @@
     assignments.forEach((assignment, i) => {
       const teamId = assignment.teamId;
       if (teamId) wpaKeys.set(teamId, assignment.wpaKey);
+      if (teamId !== state.stations[i].assignment.teamId) {
+        const previous = state.stations[i].driverStation;
+        state.stations[i].driverStation = emptyDs();
+        if (previous.connected) {
+          log(`Dropping team ${state.stations[i].assignment.teamId}'s driver station from ${stationNames[i]}; the station was reassigned.`);
+        }
+      }
       state.stations[i].assignment = { teamId, wpaKey: teamId ? assignment.wpaKey : "" };
       state.stations[i].wifi = emptyWifi();
     });
@@ -118,6 +190,9 @@
         if (teamId) later(linkDelays[i], () => { station.wifi = linkedWifi(i, teamId); });
       });
     });
+    state.stations.forEach((station, i) => {
+      if (!station.driverStation.connected) later(2500 + linkDelays[i], () => connectLater(i));
+    });
     later(4500, () => {
       state.switchStatus = "ACTIVE";
       log(`Switch configured for stations ${describeTeams()}`);
@@ -128,6 +203,7 @@
   function route(method, path, body) {
     if (method === "GET" && path === "/api/status") return [200, state];
     if (method === "PUT" && path === "/api/stations") return apply(body);
+    if (method === "PUT" && path === "/api/driver-stations") return setDriverStationMode(body.mode);
     if (method === "GET" && path === "/api/settings") return [200, settings];
     if (method === "PUT" && path === "/api/settings") {
       const key = body.DefaultWpaKey ?? "";

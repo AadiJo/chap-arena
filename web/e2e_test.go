@@ -139,7 +139,7 @@ func TestEndToEnd(t *testing.T) {
 	startApp := func() (*model.Database, *httptest.Server) {
 		database, err := model.OpenDatabase(dbPath)
 		require.Nil(t, err)
-		fieldController, err := field.New(database)
+		fieldController, err := field.New(database, field.DefaultDriverStationPorts)
 		require.Nil(t, err)
 		go fieldController.Run()
 		return database, httptest.NewServer(NewWeb(fieldController, logTail).newHandler())

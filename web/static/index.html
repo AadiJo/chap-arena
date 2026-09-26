@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <!--
-The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars) and network
-settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract);
-/demo.js fakes the API when the URL has ?demo, for previewing without field hardware.
+The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars, driver station
+state when FMS is on), the FMS mode control in the header, and network settings (grouped lists, sticky save bar). Dark
+only. Logic lives in /app.js (see its header for the markup contract); /demo.js fakes the API when the URL has ?demo,
+for previewing without field hardware.
 -->
 <html lang="en">
 <head>
@@ -48,12 +49,23 @@ settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (se
   body[data-view=settings] #settings-view { animation: from-right .28s cubic-bezier(.3, .7, .2, 1); }
   @keyframes from-left { from { opacity: 0; transform: translateX(-24px); } }
   @keyframes from-right { from { opacity: 0; transform: translateX(24px); } }
-  @media (prefers-reduced-motion: reduce) { nav::before, #stations-view, #settings-view, dialog, dialog::backdrop { transition: none; animation: none !important; } }
+  @media (prefers-reduced-motion: reduce) { nav::before, .seg::before, .seg button, .station .name, #stations-view, #settings-view, dialog, dialog::backdrop { transition: none; animation: none !important; } }
   .sp { flex: 1; }
   /* Hardware indicators: a soft tint of the state color with the icon in a stronger shade of it, from the state app.js
      puts on the <b> inside .tip (ACTIVE ok, CONFIGURING warn, ERROR bad, anything else neutral grey). The --ind-*
      palette is separate from the page's so it can be tuned alone. Static on purpose: no pulsing. */
-  .hw { display: flex; gap: 8px; }
+  .hw { display: flex; align-items: center; gap: 8px; }
+  /* FMS mode (Off / Disabled / Enabled). Like the nav tabs, a pill slides under the current mode (body[data-ds-mode] is set
+     by app.js), changing color on the way: neutral, red (robots held disabled) or green (live). Equal columns so the
+     pill is one width. Disabled and Enabled never swap places, so a double click can't undo itself. */
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; background: var(--line); padding: 3px; border-radius: 9px; margin-right: 6px; position: relative; isolation: isolate; }
+  .seg::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 10px) / 3); border-radius: 6px; background: var(--panel); transition: transform .25s cubic-bezier(.3, .7, .2, 1), background-color .25s, opacity .2s; }
+  body:not([data-ds-mode]) .seg::before { opacity: 0; }
+  body[data-ds-mode=disabled] .seg::before { transform: translateX(calc(100% + 2px)); background: var(--bad); }
+  body[data-ds-mode=enabled] .seg::before { transform: translateX(calc(200% + 4px)); background: var(--ok); }
+  .seg button { height: 28px; padding: 0 14px; font-size: 13px; border-radius: 6px; background: transparent; color: var(--fg2); transition: color .25s; }
+  .seg button:hover, .seg [aria-pressed=true] { color: var(--fg); }
+  .seg [data-ds-mode=disabled][aria-pressed=true], .seg [data-ds-mode=enabled][aria-pressed=true] { color: #000; }
   /* Raised (neumorphic) chips. The state color is blended into the surface gradient, so the chip reads as tinted
      material coming out of the page rather than a flat badge. */
   .ind { --base: var(--neu-lo); --icon: var(--fg2); position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--icon); outline: none; background: linear-gradient(145deg, color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-hi)), color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-lo))); box-shadow: var(--neu-raise); transition: color .2s; }
@@ -104,6 +116,14 @@ settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (se
   .stats [data-field=quality][data-state=bad] { color: var(--bad); }
   .stats label { color: var(--fg3); margin-right: 3px; }
   .station:not([data-radio=linked]) .stats { visibility: hidden; }
+  /* Driver station line: enabled state, battery, trip time. app.js hides it while FMS is off. */
+  .ds { font-size: 12px; color: var(--fg2); display: flex; gap: 10px; }
+  .ds [data-field=dsState] { font-weight: 600; }
+  /* Bar beside the station name: green for an enabled robot, red for a disabled one, none without a robot. Always
+     padded so the name doesn't jump when it appears; the color fades between states. */
+  .station .name { box-shadow: inset 3px 0 0 transparent; padding-left: 8px; margin-left: -11px; transition: box-shadow .25s; }
+  .station[data-robot=enabled] .name { box-shadow: inset 3px 0 0 var(--ok); }
+  .station[data-robot=disabled] .name { box-shadow: inset 3px 0 0 var(--bad); }
   /* Linked is the normal case; the bars say enough. Other states (no link, configuring, not applied) keep their text. */
   .station[data-radio=linked] [data-field=radio] { display: none; }
 
@@ -171,6 +191,11 @@ settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (se
   <span class="brand">Field Management System</span>
   <nav><a href="#" data-nav="stations">Stations</a><a href="#settings" data-nav="settings">Settings</a></nav>
   <div class="hw">
+    <div class="seg" role="group" aria-label="FMS">
+      <button type="button" data-ds-mode="off" title="Driver stations stay in local mode; teams enable their own robots">Off</button>
+      <button type="button" data-ds-mode="disabled" title="FMS controls driver stations; every robot disabled (Space)">Disabled</button>
+      <button type="button" data-ds-mode="enabled" title="Enable every connected robot. Press again to enable ones that connected since.">Enabled</button>
+    </div>
     <!-- Icons: Lucide (lucide.dev, ISC license), inlined so they work without internet. -->
     <span class="ind" tabindex="0">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6"/><path d="M10.01 18H10"/><path d="M15 10v4"/><path d="M17.84 7.17a4 4 0 0 0-5.66 0"/><path d="M20.66 4.34a8 8 0 0 0-11.31 0"/></svg>
@@ -197,6 +222,7 @@ settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (se
         <div class="link">
           <span class="radio"><span data-field="radio"></span><span class="bars"><i></i><i></i><i></i><i></i></span></span>
           <span class="stats"><span data-field="quality"></span></span>
+          <span class="ds" data-field="ds" hidden><span data-field="dsState"></span><span data-field="battery"></span><span data-field="trip"></span></span>
         </div>
       </div>
     </template>
