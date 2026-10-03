@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/nt"
 	"github.com/Team254/cheesy-arena/web"
 	"io"
 	"log"
@@ -20,8 +21,9 @@ import (
 
 const logTailLines = 200
 
-// Main entry point for the application. event.db and cheesy-arena.log live next to the executable unless -db is given,
-// so an event.db copied from full Cheesy Arena can be dropped in beside the binary.
+// Main entry point for the application. event.db, cheesy-arena.log and the recordings folder live next to the executable
+// unless -db is given, in which case they go next to the database. An event.db copied from full Cheesy Arena can be
+// dropped in beside the binary.
 func main() {
 	dbPath := flag.String("db", "", "Path to the event database (default: event.db next to the executable)")
 	port := flag.Int("port", 8080, "HTTP port for the web UI")
@@ -45,7 +47,13 @@ func main() {
 	if err != nil {
 		log.Fatalln("Error opening database: ", err)
 	}
-	field, err := field.New(database, field.DefaultDriverStationPorts)
+	field, err := field.New(
+		database, field.Options{
+			DriverStationPorts: field.DefaultDriverStationPorts,
+			NtAddress:          nt.RobotAddress,
+			RecordingsDir:      filepath.Join(filepath.Dir(*dbPath), "recordings"),
+		},
+	)
 	if err != nil {
 		log.Fatalln("Error during startup: ", err)
 	}

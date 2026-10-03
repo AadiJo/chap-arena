@@ -10,6 +10,10 @@
 // FMS mode follows field/driver_station.go: it starts off; turning it on has driver stations connect one by one (B2's
 // never does, and R3's connects late enough to show a robot that missed Enable); Enabled enables whatever is connected;
 // off drops them all. Reassigning a station drops its driver station, which reconnects if the new team has one.
+//
+// Telemetry follows field/telemetry.go: every assigned team except 971 has a robot publishing NetworkTables, from one of
+// two made-up topic lists. Configured topics report 50 Hz and values that change over time, formatted as the server
+// formats them. Recording only counts; nothing is written anywhere.
 
 "use strict";
 
@@ -65,6 +69,7 @@
       };
     }),
     driverStationMode: "off",
+    recording: { active: false, startedAt: new Date(0).toISOString(), folder: "" },
     accessPointStatus: "ACTIVE",
     switchStatus: "ACTIVE",
     lastApplied: new Date().toISOString(),
@@ -200,8 +205,99 @@
     return [200, state];
   }
 
+  // Topics each demo robot publishes: name, NT type, and a function of seconds since page load giving the formatted
+  // last value (null for types the server doesn't decode).
+  const pose = (t, phase) => {
+    const x = 8.27 + 3 * Math.cos(t / 3 + phase), y = 4.1 + 2 * Math.sin(t / 3 + phase);
+    return `${x.toFixed(2)}, ${y.toFixed(2)}, ${(((t / 3 + phase) * 180 / Math.PI + 90) % 360 - 180).toFixed(1)}°`;
+  };
+  const topicLists = {
+    advantageKit: [
+      ["/AdvantageKit/DriverStation/Enabled", "boolean", () => "false"],
+      ["/AdvantageKit/RealOutputs/Drive/ModuleStates", "struct:SwerveModuleState[]", null],
+      ["/AdvantageKit/RealOutputs/Odometry/Robot", "struct:Pose2d", pose],
+      ["/AdvantageKit/RealOutputs/Odometry/Trajectory", "struct:Pose2d[]", () => "12 poses"],
+      ["/AdvantageKit/RealOutputs/Superstructure/State", "string", (t) => (t % 8 < 4 ? '"INTAKING"' : '"SCORING"')],
+      ["/AdvantageKit/RealOutputs/Vision/Summary/RobotPoses", "struct:Pose3d[]", null],
+      ["/SmartDashboard/Field/Robot", "double[]", (t, phase) => pose(t, phase).replace("°", "")],
+      ["/SmartDashboard/Shooter RPM", "double", (t) => (4180 + 20 * Math.sin(t)).toFixed(1)],
+    ],
+    basic: [
+      ["/FMSInfo/IsRedAlliance", "boolean", () => "true"],
+      ["/SmartDashboard/Field/Robot", "double[]", (t, phase) => pose(t, phase).replace("°", "")],
+      ["/SmartDashboard/Gyro", "double", (t) => ((t * 20) % 360).toFixed(1)],
+      ["/SmartDashboard/Auto choices", "string[]", () => '"Left", "Center", "Right"'],
+    ],
+  };
+  const robotTopicList = { 254: "advantageKit", 6328: "advantageKit", 118: "advantageKit" };
+  const unreachableRobots = new Set([971]);
+  const teamTopics = new Map([
+    [254, ["/AdvantageKit/RealOutputs/Odometry/Robot", "/AdvantageKit/RealOutputs/Superstructure/State"]],
+    [1678, ["/SmartDashboard/Field/Robot"]],
+    [971, ["/SmartDashboard/Field/Robot"]],
+    [2056, ["/Pose"]],
+  ]);
+  const pageLoaded = Date.now();
+
+  function telemetryTeam(teamId, station) {
+    const connection = !station ? "offField" : unreachableRobots.has(teamId) ? "disconnected" : "connected";
+    const published = connection === "connected" ? topicLists[robotTopicList[teamId] ?? "basic"] : [];
+    const t = (Date.now() - pageLoaded) / 1000;
+    const phase = teamId % 7;
+    const topics = (teamTopics.get(teamId) ?? []).map((name) => {
+      const topic = published.find(([topicName]) => topicName === name);
+      return {
+        name,
+        type: topic?.[1] ?? "",
+        hz: topic ? 50 : 0,
+        last: topic ? (topic[2] ? topic[2](t, phase) : "64 bytes") : "",
+      };
+    });
+    const available = published.map(([name, type, value]) => ({ name, type, supported: value !== null }));
+    return { teamId, station, connection, topics, available };
+  }
+
+  function telemetry() {
+    const teams = state.stations.filter((s) => s.assignment.teamId).map((s) => telemetryTeam(s.assignment.teamId, s.station));
+    const listed = new Set(teams.map((team) => team.teamId));
+    for (const teamId of [...teamTopics.keys()].sort((a, b) => a - b)) {
+      if (!listed.has(teamId)) teams.push(telemetryTeam(teamId, ""));
+    }
+    return { teams };
+  }
+
+  function setTeamTopics(teamId, body) {
+    if (!(teamId >= 1 && teamId <= maxTeamId)) return [400, { error: `team number must be between 1 and ${maxTeamId}` }];
+    if (!Array.isArray(body.topics)) return [400, { error: "topics must be a list" }];
+    const topics = [...new Set(body.topics.map((topic) => topic.trim()).filter(Boolean))];
+    if (topics.length) teamTopics.set(teamId, topics);
+    else teamTopics.delete(teamId);
+    return [200, telemetry()];
+  }
+
+  function setRecording(active) {
+    if (active && !state.recording.active) {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const folder = `recordings/${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_` +
+        `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      state.recording = { ...state.recording, active: true, startedAt: now.toISOString(), folder };
+      log(`Recording NetworkTables to ${folder}`);
+    } else if (!active && state.recording.active) {
+      const topics = telemetry().teams.reduce((count, team) => count + team.topics.filter((t) => t.hz > 0).length, 0);
+      const values = Math.round((Date.now() - new Date(state.recording.startedAt)) / 20) * topics;
+      log(`Recorded ${values} values to ${state.recording.folder}`);
+      state.recording = { ...state.recording, active: false, folder: "" };
+    }
+    return [200, state];
+  }
+
   function route(method, path, body) {
     if (method === "GET" && path === "/api/status") return [200, state];
+    if (method === "GET" && path === "/api/telemetry") return [200, telemetry()];
+    if (method === "PUT" && path === "/api/recording") return setRecording(Boolean(body.active));
+    const teamTopicsPath = path.match(/^\/api\/teams\/(\d+)\/topics$/);
+    if (method === "PUT" && teamTopicsPath) return setTeamTopics(Number(teamTopicsPath[1]), body);
     if (method === "PUT" && path === "/api/stations") return apply(body);
     if (method === "PUT" && path === "/api/driver-stations") return setDriverStationMode(body.mode);
     if (method === "GET" && path === "/api/settings") return [200, settings];

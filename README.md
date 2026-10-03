@@ -1,12 +1,13 @@
 Cheesy Arena Radio Config
 =========================
-A stripped-down [Cheesy Arena](https://github.com/Team254/cheesy-arena) that only configures the field network. Put a
+A stripped-down [Cheesy Arena](https://github.com/Team254/cheesy-arena) that configures the field network. Put a
 team number and radio password on each driver station, hit Apply, and the access point and switch are set up for those
 teams. Nothing else about a match is run.
 
 By default it doesn't talk to the driver stations, so teams can enable and disable their own robots as soon as their
-radio links. Turn FMS on from the header when you want to enable and disable every robot at once. Leave it running and
-change stations whenever someone new shows up.
+radio links. Turn FMS on from the header when you want to enable and disable every robot at once, and use the Teams
+page to record NetworkTables topics such as each robot's pose. Leave it running and change stations whenever someone
+new shows up.
 
 ## Running
 
@@ -54,6 +55,36 @@ station whose team moved, and it reconnects to its new station.
 Driver stations look for FMS at `10.0.100.5` on TCP 1750 and UDP 1160, so the computer running this app needs that
 address on the field network (the log warns when it doesn't). On Windows, allow the firewall prompt the first time you
 turn FMS on. If the app stops, driver stations stop hearing from it and disable their robots.
+
+## Recording NetworkTables
+
+The Teams page picks NetworkTables topics to record from each team's robot, for example its pose to compare against an
+overhead camera. Topics are saved per team (in `event.db`, next to its WPA key), so they follow the team to any
+station.
+
+The app connects to every robot on the field as a read-only NT4 client (`10.TE.AM.2:5810`, named `chap-arena`) and
+lists everything the robot publishes. Click + to record a topic, which moves it up to the recorded list, and - to stop
+recording it. You can also type a path for a robot that isn't connected yet. Each recorded topic shows its rate and
+last value. Poses, numbers, booleans, strings and their arrays decode; other
+structs are listed as not supported, and are recorded as base64 if you type their path.
+
+Record, in the header, starts a session folder in `recordings/` next to the database, with a folder per team and a CSV
+per topic. It records every value the robot publishes (usually 50 Hz), not a sampled rate. Each row has
+`unix_time_us`, the robot's timestamp converted to this computer's clock, and `robot_time_us`, the robot's own clock.
+Poses get `x`, `y` (meters) and `rotation` (radians) columns; everything else has one `value` column, with arrays as
+JSON.
+
+The clocks are synced over NT4 every few seconds, to within a few milliseconds. To line recordings up with video,
+timestamp the camera frames on this computer (or one synced to it) and measure the camera's fixed latency once, for
+example by sliding the pose track against the camera track until they match.
+
+The field switch has to let robots answer on port 5810. `switch_config.txt` includes the line; add it to the `DS-FMS`
+access list on a switch set up from an older copy:
+
+```
+ip access-list extended DS-FMS
+ permit tcp any eq 5810 10.0.100.0 0.0.0.255 established
+```
 
 ## Settings page
 

@@ -1,9 +1,10 @@
 // Copyright 2014 Team 254. All Rights Reserved.
 // Author: pat@patfairbank.com (Patrick Fairbank)
 //
-// Owns the field network hardware (access point, switch, SCC switches), the team assigned to each driver station, and
-// the optional FMS connection to the driver stations (see driver_station.go). That connection starts off, so teams can
-// enable their robots themselves once their radio links.
+// Owns the field network hardware (access point, switch, SCC switches), the team assigned to each driver station, the
+// optional FMS connection to the driver stations (see driver_station.go), and NetworkTables recording from the robots
+// (see telemetry.go). The FMS connection starts off, so teams can enable their robots themselves once their radio
+// links.
 
 package field
 
@@ -52,6 +53,17 @@ type Status struct {
 	SwitchStatus      string            `json:"switchStatus"`
 	LastApplied       time.Time         `json:"lastApplied"`
 	DriverStationMode DriverStationMode `json:"driverStationMode"`
+	Recording         RecordingStatus   `json:"recording"`
+}
+
+// Options are the parts of the field that differ between a real field and tests.
+type Options struct {
+	// Ports driver stations connect to while FMS is on.
+	DriverStationPorts DriverStationPorts
+	// Where each team's robot serves NetworkTables, e.g. nt.RobotAddress. nil means never connect to robots.
+	NtAddress func(teamId int) string
+	// Recording sessions are created as folders in here.
+	RecordingsDir string
 }
 
 type Field struct {
@@ -69,21 +81,34 @@ type Field struct {
 	blueSCC       *network.SCCSwitch
 	wifiStatuses  [6]network.TeamWifiStatus
 
-	// Has its own lock, always taken after mutex when both are needed.
+	// Each has its own lock, always taken after mutex when both are needed.
 	driverStations *driverStations
+	telemetry      *telemetry
 
 	// Serializes switch reconfiguration so the last apply always wins.
 	switchMutex sync.Mutex
 }
 
 // Loads settings and the last applied station assignment from the database. The access point is told to expect that
-// assignment, so a restart leaves linked robots alone unless the AP has drifted. Driver stations will be listened for on
-// the given ports once SetDriverStationMode turns FMS on.
-func New(database *model.Database, driverStationPorts DriverStationPorts) (*Field, error) {
-	field := Field{database: database, driverStations: newDriverStations(driverStationPorts)}
+// assignment, so a restart leaves linked robots alone unless the AP has drifted. Starts connecting to the assigned
+// robots' NetworkTables right away; driver stations are listened for once SetDriverStationMode turns FMS on.
+func New(database *model.Database, options Options) (*Field, error) {
 	settings, err := database.GetEventSettings()
 	if err != nil {
 		return nil, err
+	}
+	teams, err := database.GetAllTeams()
+	if err != nil {
+		return nil, err
+	}
+	topics := map[int][]string{}
+	for _, team := range teams {
+		topics[team.Id] = team.NtTopics
+	}
+	field := Field{
+		database:       database,
+		driverStations: newDriverStations(options.DriverStationPorts),
+		telemetry:      newTelemetry(options.NtAddress, options.RecordingsDir, topics),
 	}
 	for i, teamId := range settings.StationTeamIds {
 		if teamId == 0 {
@@ -101,6 +126,7 @@ func New(database *model.Database, driverStationPorts DriverStationPorts) (*Fiel
 	field.loadSettings(*settings)
 	field.accessPoint.SetExpectedTeams(field.teams())
 	field.driverStations.setTeams(settings.StationTeamIds)
+	field.telemetry.setStations(settings.StationTeamIds)
 	return &field, nil
 }
 
@@ -182,6 +208,7 @@ func (field *Field) Apply(assignments [6]Assignment) error {
 	field.assignments = assignments
 	field.lastApplied = time.Now()
 	field.driverStations.setTeams(field.settings.StationTeamIds)
+	field.telemetry.setStations(field.settings.StationTeamIds)
 	teams := field.teams()
 	field.mutex.Unlock()
 
@@ -199,6 +226,47 @@ func (field *Field) SetDriverStationMode(mode DriverStationMode) error {
 	return field.driverStations.setMode(mode)
 }
 
+// Saves the NetworkTables topics to record for a team, replacing any it had, and resubscribes if its robot is
+// connected. Blank and duplicate names are dropped; an empty list stops recording the team. Returns a ValidationError,
+// saving nothing, for an invalid team number or too many topics.
+func (field *Field) SetTeamTopics(teamId int, topics []string) error {
+	if teamId < 1 || teamId > maxTeamId {
+		return ValidationError(fmt.Sprintf("team number must be between 1 and %d", maxTeamId))
+	}
+	topics, err := normalizeTopics(topics)
+	if err != nil {
+		return err
+	}
+	field.mutex.Lock()
+	defer field.mutex.Unlock()
+	team, err := field.database.GetTeamById(teamId)
+	if err != nil {
+		return err
+	}
+	if team == nil {
+		if len(topics) > 0 {
+			err = field.database.CreateTeam(&model.Team{Id: teamId, NtTopics: topics})
+		}
+	} else {
+		team.NtTopics = topics
+		err = field.database.UpdateTeam(team)
+	}
+	if err != nil {
+		return err
+	}
+	field.telemetry.setTopics(teamId, topics)
+	return nil
+}
+
+// Starts or stops recording every configured topic to a new folder under Options.RecordingsDir.
+func (field *Field) SetRecording(active bool) error {
+	return field.telemetry.setRecording(active)
+}
+
+func (field *Field) Telemetry() TelemetryStatus {
+	return field.telemetry.status()
+}
+
 func (field *Field) Status() Status {
 	field.mutex.Lock()
 	defer field.mutex.Unlock()
@@ -208,6 +276,7 @@ func (field *Field) Status() Status {
 		SwitchStatus:      field.networkSwitch.Status,
 		LastApplied:       field.lastApplied,
 		DriverStationMode: driverStationMode,
+		Recording:         field.telemetry.recordingStatus(),
 	}
 	for i := range status.Stations {
 		status.Stations[i] = StationStatus{

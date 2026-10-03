@@ -1,7 +1,8 @@
 // Page logic for the UI in index.html. Talks to the JSON API in web.go.
 //
 // index.html supplies only markup and CSS. It must contain these ids: station-template, apply, clear,
-// apply-message, log, ap-status, switch-status, stations-view, settings-view, save-settings and settings-message.
+// apply-message, log, ap-status, switch-status, stations-view, teams-view, settings-view, save-settings and
+// settings-message.
 // Settings inputs are optional: each settingsFields entry with a matching id is loaded and saved; the rest are kept as
 // the server sent them.
 //
@@ -9,7 +10,19 @@
 // log-dialog (a <dialog> holding #log, opened by any [data-log-open] button, closed by [data-log-close], Esc or a
 // backdrop click; it gets data-closing while any exit animation the design defines plays).
 //
-// Nav links carry data-nav="stations" or data-nav="settings" and get aria-current="page" when active.
+// Nav links carry data-nav="stations", "teams" or "settings" and get aria-current="page" when active. body gets
+// data-view, and data-enter (left|right) for the side the new view should slide in from.
+//
+// Recording: #record toggles it; #record-label shows "Record" or the elapsed time, and #record-meta shows an error if
+// starting or stopping fails.
+// body gets data-recording (true|false).
+//
+// Teams view: team-list, team-number, team-sub, recorded-topics, topic-path, add-topic, topic-filter, robot-topics and
+// teams-message, plus three templates. team-row-template is a button with data-field station, team and rate, and gets
+// data-alliance (red|blue|none) and aria-current="true" when selected. topic-row-template (a recorded topic) has
+// data-field name, type, hz and last, and a [data-action=remove] button. robot-topic-template has name, type and note,
+// and a [data-action=add] button that's hidden when the note shows instead. Rows get data-key and are updated in place,
+// and lists get data-empty text for when they're empty.
 //
 // FMS mode: buttons with data-ds-mode (off|disabled|enabled) set it and get aria-pressed="true" when current; body gets
 // data-ds-mode. Space sets disabled from anywhere but a text field while FMS is on.
@@ -221,6 +234,7 @@ function hardwareState(status) {
 function renderStatus() {
   setText($("ap-status"), lastStatus.accessPointStatus, hardwareState(lastStatus.accessPointStatus));
   setText($("switch-status"), lastStatus.switchStatus, hardwareState(lastStatus.switchStatus));
+  renderRecording();
   document.body.dataset.dsMode = lastStatus.driverStationMode;
   for (const button of document.querySelectorAll("[data-ds-mode]")) {
     button.setAttribute("aria-pressed", String(button.dataset.dsMode === lastStatus.driverStationMode));
@@ -296,11 +310,209 @@ async function poll() {
     lastStatus = await api("GET", "/api/status");
     if (first) loadInputsFromStatus();
     renderStatus();
+    if (document.body.dataset.view === "teams") await refreshTelemetry();
   } catch (error) {
     setText($("ap-status"), "app unreachable", "bad");
   } finally {
     setTimeout(poll, 1000);
   }
+}
+
+// Recording.
+
+// Shows the elapsed time while recording, e.g. "3:12" or "1:03:12".
+function formatElapsed(since) {
+  const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const pad = (n) => String(n).padStart(2, "0");
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
+
+function renderRecording() {
+  const recording = lastStatus?.recording;
+  const active = Boolean(recording?.active);
+  document.body.dataset.recording = String(active);
+  const button = $("record");
+  if (!button) return;
+  setText($("record-label"), active ? formatElapsed(new Date(recording.startedAt)) : "Record");
+  button.title = active ? `Recording to ${recording.folder}. Click to stop.` : "Record NetworkTables topics";
+}
+
+async function toggleRecording() {
+  try {
+    lastStatus = await api("PUT", "/api/recording", { active: !lastStatus?.recording?.active });
+    renderStatus();
+  } catch (error) {
+    setText($("record-meta"), error.message, "bad");
+    setTimeout(() => setText($("record-meta"), ""), 4000);
+  }
+}
+
+// Teams view: the NetworkTables topics recorded for each team (see field/telemetry.go).
+
+// Last response from /api/telemetry.
+let lastTelemetry = null;
+// Team shown on the right; falls back to the first listed team when it's no longer listed.
+let selectedTeam = null;
+
+const connectionLabels = {
+  connected: ["NT connected", "ok"],
+  disconnected: ["no NT", "bad"],
+  offField: ["not on field", "dim"],
+};
+
+// Makes container's children match items, reusing each item's element by key. Rows under the pointer are updated in
+// place rather than replaced, since replacing one between mousedown and mouseup would swallow the click.
+function syncChildren(container, items, keyOf, templateId, update) {
+  const existing = new Map([...container.children].map((element) => [element.dataset.key, element]));
+  items.forEach((item, i) => {
+    const key = String(keyOf(item));
+    let element = existing.get(key);
+    if (element) {
+      existing.delete(key);
+    } else {
+      element = $(templateId).content.firstElementChild.cloneNode(true);
+      element.dataset.key = key;
+    }
+    update(element, item);
+    if (container.children[i] !== element) container.insertBefore(element, container.children[i] ?? null);
+  });
+  for (const element of existing.values()) element.remove();
+}
+
+const fieldOf = (element, key) => element.querySelector(`[data-field="${key}"]`);
+
+function selectedTelemetry() {
+  return lastTelemetry?.teams.find((team) => team.teamId === selectedTeam)
+    ?? { teamId: selectedTeam, station: "", connection: "offField", topics: [], available: [] };
+}
+
+// The slowest configured topic's rate, since that's the one to worry about.
+function teamRate(team) {
+  if (!team.topics.length || team.connection === "offField") return ["-", "dim"];
+  if (team.connection === "disconnected") return ["waiting", "warn"];
+  const rate = Math.min(...team.topics.map((topic) => topic.hz));
+  return rate ? [`${rate} Hz`, "ok"] : ["no data", "warn"];
+}
+
+async function refreshTelemetry() {
+  lastTelemetry = await api("GET", "/api/telemetry");
+  renderTelemetry();
+}
+
+function renderTelemetry() {
+  if (!lastTelemetry) return;
+  const teams = lastTelemetry.teams;
+  if (!teams.some((team) => team.teamId === selectedTeam)) selectedTeam = teams[0]?.teamId ?? null;
+
+  const list = $("team-list");
+  list.dataset.empty = "No teams on the field";
+  syncChildren(list, teams, (team) => team.teamId, "team-row-template", (row, team) => {
+    setText(fieldOf(row, "team"), String(team.teamId));
+    setText(fieldOf(row, "station"), team.station);
+    row.dataset.alliance = team.station.startsWith("R") ? "red" : team.station.startsWith("B") ? "blue" : "none";
+    setText(fieldOf(row, "rate"), ...teamRate(team));
+    row.setAttribute("aria-current", String(team.teamId === selectedTeam));
+  });
+  renderTeamDetail();
+}
+
+function renderTeamDetail() {
+  const detail = $("teams-view").querySelector(".team-detail");
+  detail.hidden = selectedTeam === null;
+  if (selectedTeam === null) return;
+  const team = selectedTelemetry();
+  setText($("team-number"), String(team.teamId));
+  const sub = $("team-sub");
+  const [connection, connectionState] = connectionLabels[team.connection];
+  sub.replaceChildren();
+  for (const [text, state] of [
+    [connection, connectionState],
+    [team.station],
+  ]) {
+    if (!text) continue;
+    const span = document.createElement("span");
+    setText(span, text, state);
+    sub.append(span);
+  }
+
+  const recorded = $("recorded-topics");
+  recorded.dataset.empty = "No topics";
+  syncChildren(recorded, team.topics, (topic) => topic.name, "topic-row-template", (row, topic) => {
+    setText(fieldOf(row, "name"), topic.name);
+    row.title = topic.name;
+    setText(fieldOf(row, "type"), topic.type || "-", topic.type ? undefined : "dim");
+    const live = team.connection === "connected";
+    setText(fieldOf(row, "hz"), live ? `${topic.hz} Hz` : "-", !live ? "dim" : topic.hz ? "ok" : "warn");
+    setText(fieldOf(row, "last"), live ? topic.last : "");
+  });
+
+  const filter = $("topic-filter").value.trim().toLowerCase();
+  const robotTopics = $("robot-topics");
+  robotTopics.dataset.empty = team.connection === "connected" ? (filter ? "No matches" : "No topics")
+    : team.connection === "disconnected" ? "Can't reach the robot's NetworkTables" : "Not on the field";
+  // Recorded topics move up to the list above, so the robot list only offers ones that aren't recorded yet.
+  const recordedNames = new Set(team.topics.map((topic) => topic.name));
+  const available = team.available.filter(
+    (topic) => !recordedNames.has(topic.name) && topic.name.toLowerCase().includes(filter),
+  );
+  syncChildren(robotTopics, available, (topic) => topic.name, "robot-topic-template", (row, topic) => {
+    setText(fieldOf(row, "name"), topic.name);
+    row.title = topic.name;
+    setText(fieldOf(row, "type"), topic.type);
+    row.classList.toggle("unsupported", !topic.supported);
+    const note = topic.supported ? "" : "not supported";
+    setText(fieldOf(row, "note"), note);
+    fieldOf(row, "note").hidden = !note;
+    row.querySelector("[data-action=add]").hidden = Boolean(note);
+  });
+}
+
+// Saves the selected team's topics and shows the result.
+async function saveTopics(topics) {
+  const teamId = selectedTeam;
+  try {
+    lastTelemetry = await api("PUT", `/api/teams/${teamId}/topics`, { topics });
+    setText($("teams-message"), "");
+  } catch (error) {
+    setText($("teams-message"), error.message, "bad");
+  }
+  renderTelemetry();
+}
+
+function addTopic(name) {
+  name = name.trim();
+  const topics = selectedTelemetry().topics.map((topic) => topic.name);
+  if (!name || topics.includes(name)) return;
+  saveTopics([...topics, name]);
+}
+
+function setUpTeamsView() {
+  $("team-list").addEventListener("click", (event) => {
+    const row = event.target.closest("[data-key]");
+    if (!row) return;
+    selectedTeam = Number(row.dataset.key);
+    setText($("teams-message"), "");
+    renderTelemetry();
+  });
+  $("recorded-topics").addEventListener("click", (event) => {
+    const row = event.target.closest("[data-action=remove]")?.closest("[data-key]");
+    if (!row) return;
+    saveTopics(selectedTelemetry().topics.map((topic) => topic.name).filter((name) => name !== row.dataset.key));
+  });
+  $("robot-topics").addEventListener("click", (event) => {
+    const row = event.target.closest("[data-action=add]")?.closest("[data-key]");
+    if (row) addTopic(row.dataset.key);
+  });
+  const topicPath = $("topic-path");
+  const addTypedTopic = () => {
+    addTopic(topicPath.value);
+    topicPath.value = "";
+  };
+  $("add-topic").addEventListener("click", addTypedTopic);
+  topicPath.addEventListener("keydown", (event) => { if (event.key === "Enter") addTypedTopic(); });
+  $("topic-filter").addEventListener("input", renderTeamDetail);
 }
 
 // Settings view.
@@ -349,10 +561,14 @@ async function saveSettings() {
   }
 }
 
+const views = ["stations", "teams", "settings"];
+
 function route() {
-  const view = location.hash === "#settings" ? "settings" : "stations";
-  $("stations-view").hidden = view !== "stations";
-  $("settings-view").hidden = view !== "settings";
+  const view = views.find((name) => location.hash === `#${name}`) ?? "stations";
+  const previous = document.body.dataset.view;
+  // Slide in from the side the new tab is on, relative to the old one; the first view comes in from the left.
+  document.body.dataset.enter = previous && views.indexOf(view) > views.indexOf(previous) ? "right" : "left";
+  for (const name of views) $(`${name}-view`).hidden = view !== name;
   document.body.dataset.view = view;
   for (const link of document.querySelectorAll("[data-nav]")) {
     if (link.dataset.nav === view) link.setAttribute("aria-current", "page");
@@ -362,6 +578,7 @@ function route() {
     setText($("settings-message"), "");
     loadSettings().catch((error) => setText($("settings-message"), error.message, "bad"));
   }
+  if (view === "teams") refreshTelemetry().catch((error) => setText($("teams-message"), error.message, "bad"));
 }
 
 buildStationRows();
@@ -371,6 +588,12 @@ $("clear").addEventListener("click", () => {
   if (lastStatus) renderStatus();
 });
 $("save-settings").addEventListener("click", saveSettings);
+$("record").addEventListener("click", () => {
+  // Don't leave focus on the button, where Space (which disables robots) would press it again.
+  $("record").blur();
+  toggleRecording();
+});
+setUpTeamsView();
 for (const button of document.querySelectorAll("[data-ds-mode]")) {
   button.addEventListener("click", () => {
     // Don't leave focus on the button, where Space would press it again.

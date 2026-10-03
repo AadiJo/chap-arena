@@ -48,6 +48,9 @@ func (web *Web) newHandler() http.Handler {
 	mux.HandleFunc("GET /api/status", web.statusHandler)
 	mux.HandleFunc("PUT /api/stations", web.stationsPutHandler)
 	mux.HandleFunc("PUT /api/driver-stations", web.driverStationsPutHandler)
+	mux.HandleFunc("PUT /api/recording", web.recordingPutHandler)
+	mux.HandleFunc("GET /api/telemetry", web.telemetryGetHandler)
+	mux.HandleFunc("PUT /api/teams/{teamId}/topics", web.teamTopicsPutHandler)
 	mux.HandleFunc("GET /api/teams/{teamId}", web.teamGetHandler)
 	mux.HandleFunc("GET /api/settings", web.settingsGetHandler)
 	mux.HandleFunc("PUT /api/settings", web.settingsPutHandler)
@@ -97,6 +100,54 @@ func (web *Web) driverStationsPutHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	web.statusHandler(w, r)
+}
+
+// Starts or stops recording from {"active": true | false} and responds with the new status. Responds 500 if the
+// recording folder couldn't be created.
+func (web *Web) recordingPutHandler(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Active *bool `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if request.Active == nil {
+		writeError(w, http.StatusBadRequest, errors.New("active is required"))
+		return
+	}
+	if err := web.field.SetRecording(*request.Active); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	web.statusHandler(w, r)
+}
+
+// Lists the teams on the field or with topics configured, with their robots' topics and live values.
+func (web *Web) telemetryGetHandler(w http.ResponseWriter, r *http.Request) {
+	writeJson(w, http.StatusOK, web.field.Telemetry())
+}
+
+// Replaces a team's recorded topics from {"topics": [...]} and responds with the telemetry listing. Responds 400 for a
+// bad team number or topic list.
+func (web *Web) teamTopicsPutHandler(w http.ResponseWriter, r *http.Request) {
+	teamId, err := strconv.Atoi(r.PathValue("teamId"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var request struct {
+		Topics []string `json:"topics"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := web.field.SetTeamTopics(teamId, request.Topics); err != nil {
+		writeFieldError(w, err)
+		return
+	}
+	web.telemetryGetHandler(w, r)
 }
 
 // Looks up a team's stored WPA key so the UI can prefill it. Responds 404 if the team isn't in the database.

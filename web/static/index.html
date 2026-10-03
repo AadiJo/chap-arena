@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <!--
 The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars, driver station
-state when FMS is on), the FMS mode control in the header, and network settings (grouped lists, sticky save bar). Dark
-only. Logic lives in /app.js (see its header for the markup contract); /demo.js fakes the API when the URL has ?demo,
+state when FMS is on), NetworkTables topics recorded per team, the FMS mode control and Record button in the header,
+and network settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract); /demo.js fakes the API when the URL has ?demo,
 for previewing without field hardware.
 -->
 <html lang="en">
@@ -34,22 +34,24 @@ for previewing without field hardware.
   .brand { font-size: 14px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
   .hw { justify-self: end; }
 
-  /* Two equal tabs over a pill that slides to the current view (body[data-view] is set by app.js). */
-  nav { display: grid; grid-template-columns: 1fr 1fr; background: var(--line); padding: 3px; border-radius: 9px; position: relative; isolation: isolate; }
-  nav::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 6px; background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .12); transition: transform .25s cubic-bezier(.3, .7, .2, 1); }
-  body[data-view=settings] nav::before { transform: translateX(100%); }
+  /* Three equal tabs over a pill that slides to the current view (body[data-view] is set by app.js). */
+  nav { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--line); padding: 3px; border-radius: 9px; position: relative; isolation: isolate; }
+  nav::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 6px; background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .12); transition: transform .25s cubic-bezier(.3, .7, .2, 1); }
+  body[data-view=teams] nav::before { transform: translateX(100%); }
+  body[data-view=settings] nav::before { transform: translateX(200%); }
   /* On black the drop shadow only darkens the gap under the pill, making it look off-center. */
   nav::before { box-shadow: none; }
   /* 4px/6px instead of 5px/5px: the box centers cap height, but the eye centers the lowercase letters, which sit low. */
   nav a { color: var(--fg2); text-decoration: none; padding: 4px 16px 6px; text-align: center; font-weight: 500; font-size: 13px; transition: color .2s; }
   nav a[aria-current] { color: var(--fg); }
 
-  /* The incoming view slides in from the side its tab is on. One-shot, so nothing repaints while idle. */
-  body[data-view=stations] #stations-view { animation: from-left .28s cubic-bezier(.3, .7, .2, 1); }
-  body[data-view=settings] #settings-view { animation: from-right .28s cubic-bezier(.3, .7, .2, 1); }
+  /* The incoming view slides in from the side its tab is on, relative to the previous tab (body[data-enter] is set by
+     app.js). One-shot, so nothing repaints while idle. */
+  body[data-enter=left] .view:not([hidden]) { animation: from-left .28s cubic-bezier(.3, .7, .2, 1); }
+  body[data-enter=right] .view:not([hidden]) { animation: from-right .28s cubic-bezier(.3, .7, .2, 1); }
   @keyframes from-left { from { opacity: 0; transform: translateX(-24px); } }
   @keyframes from-right { from { opacity: 0; transform: translateX(24px); } }
-  @media (prefers-reduced-motion: reduce) { nav::before, .seg::before, .seg button, .station .name, #stations-view, #settings-view, dialog, dialog::backdrop { transition: none; animation: none !important; } }
+  @media (prefers-reduced-motion: reduce) { nav::before, .seg::before, .seg button, .station .name, .view, dialog, dialog::backdrop { transition: none; animation: none !important; } }
   .sp { flex: 1; }
   /* Hardware indicators: a soft tint of the state color with the icon in a stronger shade of it, from the state app.js
      puts on the <b> inside .tip (ACTIVE ok, CONFIGURING warn, ERROR bad, anything else neutral grey). The --ind-*
@@ -68,6 +70,13 @@ for previewing without field hardware.
   .seg [data-ds-mode=disabled][aria-pressed=true], .seg [data-ds-mode=enabled][aria-pressed=true] { color: #000; }
   /* Raised (neumorphic) chips. The state color is blended into the surface gradient, so the chip reads as tinted
      material coming out of the page rather than a flat badge. */
+  /* Record button: a grey dot while idle; while recording, a red tint and dot with the elapsed time. Static, no pulse. */
+  .rec { display: flex; align-items: center; gap: 10px; margin-right: 6px; }
+  .rec-btn { height: 34px; padding: 0 14px 0 12px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .rec-btn i { width: 9px; height: 9px; border-radius: 50%; background: var(--fg3); transition: background-color .25s; }
+  body[data-recording=true] .rec-btn { background: color-mix(in srgb, var(--bad) 16%, var(--line)); }
+  body[data-recording=true] .rec-btn i { background: var(--bad); }
+  .rec-meta { font-size: 12px; color: var(--fg2); white-space: nowrap; }
   .ind { --base: var(--neu-lo); --icon: var(--fg2); position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--icon); outline: none; background: linear-gradient(145deg, color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-hi)), color-mix(in srgb, var(--base) var(--ind-tint), var(--neu-lo))); box-shadow: var(--neu-raise); transition: color .2s; }
   .ind:has([data-state=dim]) { --base: var(--neu-lo); }
   .ind:has([data-state=ok]) { --base: var(--ind-ok); --icon: var(--ind-ok-fg); }
@@ -163,6 +172,51 @@ for previewing without field hardware.
   .sheet header button:hover { background: var(--line); color: var(--fg); }
   #log { margin: 0; height: min(60vh, 560px); overflow: auto; white-space: pre-wrap; padding: 14px 20px 18px; font: 12px/1.6 ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; color: var(--fg2); }
 
+  /* Teams view: team list on the left; the selected team's recorded topics and its robot's topics on the right. */
+  .teams { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .tl { position: relative; display: grid; grid-template-columns: 34px 1fr 64px; align-items: center; gap: 10px; width: 100%; height: auto; padding: 12px 16px; border-radius: 0; border-top: 1px solid var(--line); background: transparent; font-size: 13px; font-weight: 400; text-align: left; }
+  .tl:hover { background: var(--fill); }
+  .tl.head { border-top: 0; color: var(--fg3); font-size: 12px; font-weight: 600; padding: 10px 16px; }
+  .tl.head:hover { background: transparent; }
+  .tl[aria-current=true] { background: var(--fill); box-shadow: inset 3px 0 0 var(--fg); }
+  .tl [data-field=team] { font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
+  /* Station labels in alliance color, like the station names on the Stations page (data-alliance is set by app.js). */
+  .tl [data-field=station] { font-weight: 700; }
+  .tl[data-alliance=red] [data-field=station] { color: var(--red); }
+  .tl[data-alliance=blue] [data-field=station] { color: var(--blue); }
+  /* A black gap where the list moves from red to blue to off-field teams. */
+  .tl[data-alliance=red] + .tl:not([data-alliance=red]), .tl[data-alliance=blue] + .tl[data-alliance=none] { margin-top: 10px; }
+  .tl[data-alliance=red] + .tl:not([data-alliance=red])::before, .tl[data-alliance=blue] + .tl[data-alliance=none]::before { content: ""; position: absolute; left: 0; right: 0; top: -11px; height: 10px; background: var(--bg); border-top: 1px solid var(--line); }
+  .tl [data-field=rate] { text-align: right; font-size: 12px; }
+  .team-detail { padding: 20px 22px 22px; }
+  .team-detail > header { display: flex; align-items: baseline; gap: 16px; }
+  #team-number { font-size: 34px; font-weight: 700; letter-spacing: -.03em; line-height: 1; }
+  .team-sub { display: flex; gap: 14px; font-size: 13px; color: var(--fg2); }
+  .team-detail h3 { display: flex; align-items: center; gap: 10px; font-size: 14px; margin: 22px 0 10px; }
+  .tlist { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  /* Empty lists show their data-empty text (set by app.js). */
+  .tlist:empty::after, #team-list:empty::after { content: attr(data-empty); display: block; padding: 11px 12px; font-size: 12px; color: var(--fg3); }
+  #team-list:empty::after { padding: 12px 16px; border-top: 1px solid var(--line); }
+  #robot-topics { max-height: 420px; overflow: auto; }
+  .trow { display: grid; grid-template-columns: minmax(0, 1fr) 190px 56px 150px 32px; align-items: center; gap: 12px; padding: 6px 8px 6px 12px; border-top: 1px solid var(--line); font-size: 12px; min-height: 40px; }
+  .trow:first-child { border-top: 0; }
+  .trow.live { grid-template-columns: minmax(0, 1fr) 220px 100px; }
+  .trow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trow [data-field=name], .trow [data-field=type], .trow [data-field=last], .mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; }
+  .trow [data-field=type], .trow [data-field=last] { color: var(--fg2); }
+  .trow [data-field=hz] { text-align: right; }
+  .trow.unsupported [data-field=name], .trow.unsupported [data-field=type] { color: var(--fg3); }
+  .trow [data-field=note] { font-size: 11px; color: var(--fg3); text-align: right; }
+  .trow .x, .trow .add { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: transparent; color: var(--fg2); border-radius: 7px; justify-self: end; }
+  .trow .add { color: var(--ok); }
+  .trow .x:hover, .trow .add:hover { background: var(--line); }
+  .typed { display: flex; gap: 8px; margin: 10px 0 0; }
+  .typed input { flex: 1; background: var(--fill); padding: 6px 10px; font-size: 12px; }
+  .typed button { height: 30px; padding: 0 14px; font-size: 13px; }
+  #topic-filter { background: var(--fill); padding: 4px 10px; font-size: 12px; font-weight: 400; margin-left: auto; width: 220px; }
+  #teams-message { display: block; margin-top: 10px; font-weight: 500; }
+
   .settings { max-width: 760px; margin: 0 auto; }
   /* Section titles: plain sentence case at reading size, no tracked-out small caps. */
   .caption { font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--fg); margin: 28px 4px 10px; }
@@ -183,14 +237,18 @@ for previewing without field hardware.
   .settings .bar { justify-content: flex-end; position: sticky; bottom: 0; z-index: 5; margin: 8px 0 0; padding: 28px 0 20px; background: linear-gradient(to top, var(--bg) 60%, transparent); }
   .settings .bar #settings-message { margin-right: auto; }
 
-  @media (max-width: 900px) { .field { grid-template-columns: 1fr; } .hw { width: 100%; } .row { grid-template-columns: 1fr; gap: 6px; } .row input:not([type=checkbox]), .row select { max-width: none; justify-self: stretch; text-align: left; } }
+  @media (max-width: 900px) { .teams { grid-template-columns: 1fr; } .trow, .trow.live { grid-template-columns: minmax(0, 1fr) 32px; } .trow [data-field=type], .trow [data-field=hz], .trow [data-field=last] { display: none; } .trow.live [data-field=note] { display: none; } .field { grid-template-columns: 1fr; } .hw { width: 100%; } .row { grid-template-columns: 1fr; gap: 6px; } .row input:not([type=checkbox]), .row select { max-width: none; justify-self: stretch; text-align: left; } }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">Field Management System</span>
-  <nav><a href="#" data-nav="stations">Stations</a><a href="#settings" data-nav="settings">Settings</a></nav>
+  <nav><a href="#" data-nav="stations">Stations</a><a href="#teams" data-nav="teams">Teams</a><a href="#settings" data-nav="settings">Settings</a></nav>
   <div class="hw">
+    <div class="rec">
+      <button type="button" class="rec-btn" id="record"><i></i><span id="record-label">Record</span></button>
+      <span class="rec-meta" id="record-meta"></span>
+    </div>
     <div class="seg" role="group" aria-label="FMS">
       <button type="button" data-ds-mode="off" title="Driver stations stay in local mode; teams enable their own robots">Off</button>
       <button type="button" data-ds-mode="disabled" title="FMS controls driver stations; every robot disabled (Space)">Disabled</button>
@@ -209,7 +267,7 @@ for previewing without field hardware.
 </header>
 
 <main>
-  <section id="stations-view">
+  <section id="stations-view" class="view">
     <div class="field">
       <div class="alliance red" aria-label="Red alliance"><div class="banner"></div><div class="slots" data-slot="red"></div></div>
       <div class="alliance blue" aria-label="Blue alliance"><div class="banner"></div><div class="slots" data-slot="blue"></div></div>
@@ -246,7 +304,37 @@ for previewing without field hardware.
     </dialog>
   </section>
 
-  <section id="settings-view" class="settings" hidden>
+  <section id="teams-view" class="view" hidden>
+    <div class="teams">
+      <div class="panel">
+        <div class="tl head"><span></span><span>Team</span><span>Rate</span></div>
+        <div id="team-list"></div>
+      </div>
+      <div class="panel team-detail">
+        <header><span id="team-number"></span><span class="team-sub" id="team-sub"></span></header>
+        <h3>Recording</h3>
+        <div class="tlist" id="recorded-topics"></div>
+        <div class="typed">
+          <input id="topic-path" class="mono" placeholder="/path/to/topic" spellcheck="false" aria-label="Topic path">
+          <button type="button" id="add-topic">Add</button>
+        </div>
+        <h3>On robot <input id="topic-filter" placeholder="filter" spellcheck="false" aria-label="Filter robot topics"></h3>
+        <div class="tlist" id="robot-topics"></div>
+        <span id="teams-message"></span>
+      </div>
+    </div>
+    <template id="team-row-template">
+      <button type="button" class="tl"><span data-field="station"></span><span data-field="team"></span><span data-field="rate"></span></button>
+    </template>
+    <template id="topic-row-template">
+      <div class="trow"><span data-field="name"></span><span data-field="type"></span><span data-field="hz"></span><span data-field="last"></span><button type="button" class="x" data-action="remove" aria-label="Stop recording this topic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></button></div>
+    </template>
+    <template id="robot-topic-template">
+      <div class="trow live"><span data-field="name"></span><span data-field="type"></span><button type="button" class="add" data-action="add" aria-label="Record this topic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button><span data-field="note"></span></div>
+    </template>
+  </section>
+
+  <section id="settings-view" class="settings view" hidden>
     <div class="caption">Access point</div>
     <div class="list">
       <div class="row"><label for="ApAddress">Address</label><input id="ApAddress" placeholder="10.0.100.2"></div>

@@ -134,7 +134,7 @@ func TestDriverStationsEndToEnd(t *testing.T) {
 	require.Nil(t, err)
 	defer database.Close()
 	ports := freeDriverStationPorts(t)
-	fieldController, err := field.New(database, ports)
+	fieldController, err := field.New(database, field.Options{DriverStationPorts: ports, RecordingsDir: t.TempDir()})
 	require.Nil(t, err)
 	server := httptest.NewServer(NewWeb(fieldController, logTail).newHandler())
 	defer server.Close()

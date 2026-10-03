@@ -10,10 +10,16 @@ package model
 type Team struct {
 	Id     int `db:"id,manual"`
 	WpaKey string
+	// NetworkTables topics recorded from this team's robot (see field/telemetry.go).
+	NtTopics []string
 }
 
 func (database *Database) CreateTeam(team *Team) error {
 	return database.teamTable.create(team)
+}
+
+func (database *Database) GetAllTeams() ([]Team, error) {
+	return database.teamTable.getAll()
 }
 
 func (database *Database) GetTeamById(id int) (*Team, error) {
