@@ -47,6 +47,10 @@ type EventSettings struct {
 	// Used for any assigned station whose WPA key is left blank. Empty means there is no default.
 	DefaultWpaKey string
 
+	// File format for NetworkTables recordings, "wpilog" or "csv" (see field/recording.go). Empty in a database from
+	// before the setting existed, which the field treats as "wpilog".
+	RecordingFormat string
+
 	// Team IDs last applied to R1, R2, R3, B1, B2, B3 (0 means empty). Restored on startup so a restart doesn't wipe
 	// the access point.
 	StationTeamIds [6]int

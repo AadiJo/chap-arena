@@ -65,14 +65,24 @@ station.
 The app connects to every robot on the field as a read-only NT4 client (`10.TE.AM.2:5810`, named `chap-arena`) and
 lists everything the robot publishes. Click + to record a topic, which moves it up to the recorded list, and - to stop
 recording it. You can also type a path for a robot that isn't connected yet. Each recorded topic shows its rate and
-last value. Poses, numbers, booleans, strings and their arrays decode; other
-structs are listed as not supported, and are recorded as base64 if you type their path.
+last value.
 
-Record, in the header, starts a session folder in `recordings/` next to the database, with a folder per team and a CSV
-per topic. It records every value the robot publishes (usually 50 Hz), not a sampled rate. Each row has
-`unix_time_us`, the robot's timestamp converted to this computer's clock, and `robot_time_us`, the robot's own clock.
-Poses get `x`, `y` (meters) and `rotation` (radians) columns; everything else has one `value` column, with arrays as
-JSON.
+Record, in the header, starts a session folder in `recordings/` next to the database, with one file per team named for
+its number (`254.wpilog`). It records every value the robot publishes (usually 50 Hz), not a sampled rate. Pick the
+format under Recording on the Settings page. Both open in [AdvantageScope](https://docs.advantagescope.org/):
+
+- **WPILOG** (the default) is WPILib's log format, as DataLogManager writes it. Every topic keeps its type, and the
+  robot's struct schemas are recorded alongside, so poses go straight onto AdvantageScope's field views and other
+  structs (swerve module states, `Pose3d` and so on) decode.
+- **CSV** is AdvantageScope's own CSV layout (`Timestamp,Key,Value`), for line graphs, tables and spreadsheets. A pose
+  is written as the fields AdvantageScope shows for one (`translation/x`, `translation/y`, `rotation/value`), so it
+  graphs but can't go on a field view. Structs other than poses can't be read from a CSV, so the Teams page lists them
+  as WPILOG only.
+
+Topics are named `NT:` plus their path, the same as in a robot's own logs. Timestamps count from the start of the
+recording, on this computer's clock, so every team's file in a session shares one timeline. Each file starts with a
+`systemTime` value, this computer's clock in microseconds since 1970, so the wall clock time of any value is
+`systemTime` plus the time from `systemTime`'s timestamp to the value's.
 
 The clocks are synced over NT4 every few seconds, to within a few milliseconds. To line recordings up with video,
 timestamp the camera frames on this computer (or one synced to it) and measure the camera's fixed latency once, for

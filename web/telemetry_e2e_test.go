@@ -1,6 +1,6 @@
 // End-to-end test of NetworkTables recording: the real HTTP API, field controller and NT4 client against fake robots
-// that speak NT4 over a real WebSocket. Writes a transcript to e2e-output/telemetry.txt and copies the recorded CSVs to
-// e2e-output/recording/ for inspection.
+// that speak NT4 over a real WebSocket. Writes a transcript to e2e-output/telemetry.txt and copies the recordings to
+// e2e-output/recording/wpilog/ and e2e-output/recording/csv/ for inspection (or opening in AdvantageScope).
 //
 // Ways this can fail, each checked below:
 //  1. The client doesn't offer the NT4 subprotocol, so a real robot rejects it (the fake requires it).
@@ -12,8 +12,11 @@
 //  7. Changing a team's topics mid-connection doesn't change the subscription.
 //  8. A dropped connection isn't retried, or loses the subscription when it comes back.
 //  9. Moving a team off its station leaves its robot connection open.
-// 10. Stopping a recording loses buffered rows, or file names and headers are wrong.
+// 10. Stopping a recording loses buffered values, or file names and headers are wrong.
 // 11. Topics are saved in a way that loses the team's other fields.
+// 12. Struct schemas aren't subscribed to or recorded, so AdvantageScope can't decode structs. Robots send them once per
+//     connection, usually before recording starts, and AdvantageKit keeps its own under /AdvantageKit.
+// 13. The recording format setting is ignored, or a CSV isn't in the layout AdvantageScope imports.
 
 package web
 
@@ -21,7 +24,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
@@ -38,6 +40,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,9 +55,31 @@ type fakeTopic struct {
 	name  string
 	typ   string
 	value func(n int) (int, any)
+	once  bool // Sent once per connection, like a schema, rather than every 20 ms.
 }
 
-// A sample the fake robot sent: its robot timestamp and the local wall time it corresponds to.
+// Schema topics as WPILib publishes them, under prefix, starting at topic id firstId.
+func fakeSchemas(firstId int, prefix string, schemas ...[2]string) []fakeTopic {
+	var topics []fakeTopic
+	for i, schema := range schemas {
+		definition := []byte(schema[1])
+		topics = append(
+			topics, fakeTopic{
+				firstId + i, prefix + "/.schema/struct:" + schema[0], "structschema",
+				func(n int) (int, any) { return 5, definition }, true,
+			},
+		)
+	}
+	return topics
+}
+
+var pose2dSchemas = [][2]string{
+	{"Pose2d", "Translation2d translation;Rotation2d rotation"}, {"Translation2d", "double x;double y"},
+	{"Rotation2d", "double value"},
+}
+
+// A sample the fake robot sent: its robot timestamp and the local wall time it corresponds to. n counts the robot's
+// samples across connections.
 type fakeSample struct {
 	robotTime int64
 	wallTime  time.Time
@@ -71,6 +96,7 @@ type fakeRobot struct {
 	boot time.Time
 
 	mutex         sync.Mutex
+	n             int
 	connections   int
 	subscriptions map[int]map[string]any // Current subscriptions on the current connection, by subuid.
 	subscribeLog  []string
@@ -200,21 +226,23 @@ func (robot *fakeRobot) matches(name string, valuesOnly bool) bool {
 func (robot *fakeRobot) publish(ctx context.Context, write func(websocket.MessageType, []byte) error) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	n := 0
+	sentOnce := map[int]bool{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		n++
 		robotTime, wall := robot.now()
 		var frame bytes.Buffer
 		robot.mutex.Lock()
+		robot.n++
+		n := robot.n
 		for _, topic := range robot.topics {
-			if !robot.matches(topic.name, true) {
+			if !robot.matches(topic.name, true) || topic.once && sentOnce[topic.id] {
 				continue
 			}
+			sentOnce[topic.id] = true
 			typeIndex, value := topic.value(n)
 			message, _ := msgpack.Marshal([]any{topic.id, robotTime, typeIndex, value})
 			frame.Write(message)
@@ -227,13 +255,14 @@ func (robot *fakeRobot) publish(ctx context.Context, write func(websocket.Messag
 	}
 }
 
-// The value-subscribed topics and their options, as the robot currently sees them.
-func (robot *fakeRobot) valueSubscriptions() (topics []string, options []map[string]any) {
+// The value-subscribed topics and their options, as the robot currently sees them: exact topic names, or with
+// prefixes, prefix subscriptions.
+func (robot *fakeRobot) valueSubscriptions(prefixes bool) (topics []string, options []map[string]any) {
 	robot.mutex.Lock()
 	defer robot.mutex.Unlock()
 	for _, subscription := range robot.subscriptions {
 		subscriptionOptions, _ := subscription["options"].(map[string]any)
-		if subscriptionOptions["topicsonly"] == true {
+		if subscriptionOptions["topicsonly"] == true || (subscriptionOptions["prefix"] == true) != prefixes {
 			continue
 		}
 		for _, topic := range subscription["topics"].([]any) {
@@ -275,13 +304,91 @@ func pose2dBytes(x, y, rotation float64) []byte {
 // The pose the fake robots report for sample n.
 func fakePose(n int) (x, y, rotation float64) { return 1.5 + 0.01*float64(n), -2.25, 0.5 }
 
-func readCsv(t *testing.T, path string) [][]string {
-	file, err := os.Open(path)
+// A value read back from a WPILOG.
+type wpilogValue struct {
+	name      string
+	typeName  string
+	timestamp int64 // Microseconds since the recording started.
+	payload   []byte
+}
+
+// Reads a WPILOG's values, independently of the writer, following the spec in allwpilib's datalog/doc/datalog.adoc.
+func readWpilog(t *testing.T, path string) []wpilogValue {
+	data, err := os.ReadFile(path)
 	require.Nil(t, err)
-	defer file.Close()
-	rows, err := csv.NewReader(file).ReadAll()
-	require.Nil(t, err)
-	return rows
+	require.Equal(t, "WPILOG\x00\x01", string(data[:8]))
+	data = data[12+binary.LittleEndian.Uint32(data[8:]):]
+	next := func(length int) []byte {
+		require.GreaterOrEqual(t, len(data), length, "truncated record")
+		field := data[:length]
+		data = data[length:]
+		return field
+	}
+	number := func(length int) uint64 {
+		var value uint64
+		for i, b := range next(length) {
+			value |= uint64(b) << (8 * i)
+		}
+		return value
+	}
+	text := func() string { return string(next(int(number(4)))) }
+	entries := map[uint64][2]string{}
+	var values []wpilogValue
+	for len(data) > 0 {
+		lengths := next(1)[0]
+		entryId := number(int(lengths&3) + 1)
+		size := number(int(lengths>>2&3) + 1)
+		timestamp := int64(number(int(lengths>>4&7) + 1))
+		payload := next(int(size))
+		if entryId != 0 {
+			require.Contains(t, entries, entryId)
+			values = append(values, wpilogValue{entries[entryId][0], entries[entryId][1], timestamp, payload})
+			continue
+		}
+		rest := data
+		data = payload
+		if control := next(1)[0]; control == 0 {
+			id := number(4)
+			entries[id] = [2]string{text(), text()}
+		} else {
+			require.Equal(t, byte(1), control, "only start and finish are written")
+			delete(entries, number(4))
+		}
+		data = rest
+	}
+	return values
+}
+
+// The values of one entry.
+func wpilogEntry(values []wpilogValue, name string) []wpilogValue {
+	var entry []wpilogValue
+	for _, value := range values {
+		if value.name == name {
+			entry = append(entry, value)
+		}
+	}
+	return entry
+}
+
+func float64At(payload []byte, i int) float64 {
+	return math.Float64frombits(binary.LittleEndian.Uint64(payload[8*i:]))
+}
+
+// Lists a recording session's files, relative to it.
+func sessionFiles(t *testing.T, sessionDir string) []string {
+	var files []string
+	require.Nil(
+		t, filepath.Walk(
+			sessionDir, func(path string, info os.FileInfo, err error) error {
+				if err == nil && !info.IsDir() {
+					relative, _ := filepath.Rel(sessionDir, path)
+					files = append(files, filepath.ToSlash(relative))
+				}
+				return err
+			},
+		),
+	)
+	return files
 }
 
 func TestTelemetryEndToEnd(t *testing.T) {
@@ -300,21 +407,31 @@ func TestTelemetryEndToEnd(t *testing.T) {
 		modules    = "/AdvantageKit/RealOutputs/Drive/ModuleStates"
 		shooterRpm = "/SmartDashboard/Shooter RPM"
 	)
+	poseTopic := func(id int, name string) fakeTopic {
+		return fakeTopic{id: id, name: name, typ: "struct:Pose2d", value: func(n int) (int, any) {
+			return 5, pose2dBytes(fakePose(n))
+		}}
+	}
 	robot254 := newFakeRobot(
-		t, []fakeTopic{
-			{1, odometry, "struct:Pose2d", func(n int) (int, any) { return 5, pose2dBytes(fakePose(n)) }},
-			{2, state, "string", func(n int) (int, any) { return 4, "INTAKING" }},
-			{3, field2d, "double[]", func(n int) (int, any) {
-				x, y, rotation := fakePose(n)
-				return 17, []float64{x, y, rotation * 180 / math.Pi}
-			}},
-			{4, modules, "struct:SwerveModuleState[]", func(n int) (int, any) { return 5, make([]byte, 64) }},
-			{5, shooterRpm, "double", func(n int) (int, any) { return 1, 4180.5 }},
-		},
+		t, slices.Concat(
+			[]fakeTopic{
+				poseTopic(1, odometry),
+				{id: 2, name: state, typ: "string", value: func(n int) (int, any) { return 4, "INTAKING" }},
+				{id: 3, name: field2d, typ: "double[]", value: func(n int) (int, any) {
+					x, y, rotation := fakePose(n)
+					return 17, []float64{x, y, rotation * 180 / math.Pi}
+				}},
+				{id: 4, name: modules, typ: "struct:SwerveModuleState[]", value: func(n int) (int, any) {
+					return 5, make([]byte, 64)
+				}},
+				{id: 5, name: shooterRpm, typ: "double", value: func(n int) (int, any) { return 1, 4180.5 }},
+			},
+			// WPILib publishes the Pose2d schemas; AdvantageKit keeps the swerve module's in its own table.
+			fakeSchemas(10, "", pose2dSchemas...),
+			fakeSchemas(20, "/AdvantageKit", [2]string{"SwerveModuleState", "double speed;Rotation2d angle"}),
+		),
 	)
-	robot1114 := newFakeRobot(
-		t, []fakeTopic{{7, "/Pose", "struct:Pose2d", func(n int) (int, any) { return 5, pose2dBytes(fakePose(n)) }}},
-	)
+	robot1114 := newFakeRobot(t, append([]fakeTopic{poseTopic(7, "/Pose")}, fakeSchemas(10, "", pose2dSchemas...)...))
 	addresses := map[int]string{254: robot254.address(), 1114: robot1114.address()}
 
 	apServer := httptest.NewServer(&fakeAccessPoint{})
@@ -402,26 +519,34 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	}
 	assign(254, 971, 1114)
 
-	// (1) Connected robots list their topics; decodable types are marked. 971's robot can't be reached.
+	// Whether each topic a team's robot publishes can be recorded usefully, by name.
+	supportedTopics := func(team map[string]any) map[string]bool {
+		supported := map[string]bool{}
+		for _, topic := range team["available"].([]any) {
+			topic := topic.(map[string]any)
+			supported[topic["name"].(string)] = topic["supported"].(bool)
+		}
+		return supported
+	}
+
+	// (1, 12) Connected robots list their topics, schemas included, and every type is supported in a WPILOG, the
+	// default format. 971's robot can't be reached.
 	var team254 map[string]any
 	require.Eventually(
 		t, func() bool {
 			team254 = telemetryTeam(254)
-			return team254 != nil && team254["connection"] == "connected" && len(team254["available"].([]any)) == 5
+			return team254 != nil && team254["connection"] == "connected" && len(team254["available"].([]any)) == 9
 		}, 5*time.Second, 100*time.Millisecond,
 	)
-	supported := map[string]bool{}
-	for _, topic := range team254["available"].([]any) {
-		topic := topic.(map[string]any)
-		supported[topic["name"].(string)] = topic["supported"].(bool)
+	for name, supported := range supportedTopics(team254) {
+		assert.True(t, supported, name)
 	}
-	assert.Equal(
-		t, map[string]bool{odometry: true, state: true, field2d: true, modules: false, shooterRpm: true}, supported,
-	)
 	assert.Equal(t, "R1", team254["station"])
 	assert.Equal(t, "disconnected", telemetryTeam(971)["connection"])
-	topics, _ := robot254.valueSubscriptions()
+	topics, _ := robot254.valueSubscriptions(false)
 	assert.Empty(t, topics, "nothing configured, so no values are subscribed")
+	prefixes, _ := robot254.valueSubscriptions(true)
+	assert.Equal(t, []string{"/.schema/", "/AdvantageKit/.schema/"}, prefixes, "schemas are always subscribed")
 
 	// Bad requests are rejected.
 	status, _ = call("PUT", "/api/teams/0/topics", map[string]any{"topics": []string{odometry}})
@@ -440,11 +565,11 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	require.Equal(t, 200, status)
 	require.Eventually(
 		t, func() bool {
-			topics, _ := robot254.valueSubscriptions()
+			topics, _ := robot254.valueSubscriptions(false)
 			return fmt.Sprint(topics) == fmt.Sprint([]string{odometry, state})
 		}, 3*time.Second, 50*time.Millisecond,
 	)
-	_, options := robot254.valueSubscriptions()
+	_, options := robot254.valueSubscriptions(false)
 	for _, option := range options {
 		assert.Equal(t, 0.02, option["periodic"])
 		assert.Equal(t, true, option["all"])
@@ -474,12 +599,14 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	recordStart := time.Now()
 	time.Sleep(800 * time.Millisecond)
 
-	status, _ = call("PUT", "/api/teams/254/topics", map[string]any{"topics": []string{odometry, state, field2d}})
+	status, _ = call(
+		"PUT", "/api/teams/254/topics", map[string]any{"topics": []string{odometry, state, field2d, modules}},
+	)
 	require.Equal(t, 200, status)
 	require.Eventually(
 		t, func() bool {
-			topics, _ := robot254.valueSubscriptions()
-			return fmt.Sprint(topics) == fmt.Sprint([]string{odometry, state, field2d})
+			topics, _ := robot254.valueSubscriptions(false)
+			return fmt.Sprint(topics) == fmt.Sprint([]string{modules, odometry, state, field2d})
 		}, 3*time.Second, 50*time.Millisecond,
 	)
 	time.Sleep(500 * time.Millisecond)
@@ -488,8 +615,8 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	require.Eventually(
 		t, func() bool {
 			connections, open := robot254.state()
-			topics, _ := robot254.valueSubscriptions()
-			return connections == 2 && open && len(topics) == 3
+			topics, _ := robot254.valueSubscriptions(false)
+			return connections == 2 && open && len(topics) == 4
 		}, 5*time.Second, 50*time.Millisecond,
 	)
 	time.Sleep(800 * time.Millisecond)
@@ -498,70 +625,130 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	assert.Equal(t, false, body["recording"].(map[string]any)["active"])
 	recordEnd := time.Now()
 
-	// Exactly the configured topics were written, one file per topic.
-	var files []string
-	require.Nil(
-		t, filepath.Walk(
-			sessionDir, func(path string, info os.FileInfo, err error) error {
-				if err == nil && !info.IsDir() {
-					relative, _ := filepath.Rel(sessionDir, path)
-					files = append(files, filepath.ToSlash(relative))
-				}
-				return err
-			},
-		),
-	)
-	assert.Equal(
-		t, []string{
-			"1114/Pose.csv", "254/AdvantageKit_RealOutputs_Odometry_Robot.csv",
-			"254/AdvantageKit_RealOutputs_Superstructure_State.csv", "254/SmartDashboard_Field_Robot.csv",
-		}, files,
-	)
+	// One WPILOG per team.
+	assert.Equal(t, []string{"1114.wpilog", "254.wpilog"}, sessionFiles(t, sessionDir))
+	values := readWpilog(t, filepath.Join(sessionDir, "254.wpilog"))
 
-	// (5, 6, 10) Every recorded pose row matches a sample the robot sent, with its robot time converted to within a few
-	// ms of when the robot sent it, and rows cover the whole recording apart from the reconnect gap.
-	rows := readCsv(t, filepath.Join(sessionDir, "254", "AdvantageKit_RealOutputs_Odometry_Robot.csv"))
-	note("== 254 odometry: %d rows, first %v", len(rows)-1, rows[:min(4, len(rows))])
-	require.Equal(t, []string{"unix_time_us", "robot_time_us", "x", "y", "rotation"}, rows[0])
-	sent := map[int64]fakeSample{}
+	// (12) The schemas, sent before recording started, are in the file, so AdvantageScope can decode the structs.
+	for _, name := range []string{
+		"NT:/.schema/struct:Pose2d", "NT:/.schema/struct:Translation2d", "NT:/.schema/struct:Rotation2d",
+		"NT:/AdvantageKit/.schema/struct:SwerveModuleState",
+	} {
+		schema := wpilogEntry(values, name)
+		require.NotEmpty(t, schema, name)
+		assert.Equal(t, "structschema", schema[0].typeName)
+	}
+	assert.Equal(t, "double value", string(wpilogEntry(values, "NT:/.schema/struct:Rotation2d")[0].payload))
+	assert.Empty(t, wpilogEntry(values, "NT:"+shooterRpm), "not configured")
+
+	// (5, 6, 10) Every recorded pose matches a sample the robot sent, at a time within a few ms of when the robot sent
+	// it, and they cover the whole recording apart from the reconnect gap.
+	systemTime := wpilogEntry(values, "systemTime")
+	require.Len(t, systemTime, 1)
+	recordingEpoch := int64(binary.LittleEndian.Uint64(systemTime[0].payload)) - systemTime[0].timestamp
+	poses := wpilogEntry(values, "NT:"+odometry)
+	require.NotEmpty(t, poses)
+	note("== 254 odometry: %d values, the first at %d us", len(poses), poses[0].timestamp)
+	sent := map[int]fakeSample{}
 	for _, sample := range robot254.samples(odometry) {
-		sent[sample.robotTime] = sample
+		sent[sample.n] = sample
 	}
 	var worstSyncError time.Duration
-	var previousRobotTime int64
-	gaps := 0
-	for _, row := range rows[1:] {
-		unixTime, _ := strconv.ParseInt(row[0], 10, 64)
-		robotTime, _ := strconv.ParseInt(row[1], 10, 64)
-		sample, ok := sent[robotTime]
-		require.True(t, ok, "row %v doesn't match a sample the robot sent", row)
-		x, y, rotation := fakePose(sample.n)
-		assert.Equal(t, []string{fmt.Sprint(x), fmt.Sprint(y), fmt.Sprint(rotation)}, row[2:])
-		syncError := time.UnixMicro(unixTime).Sub(sample.wallTime).Abs()
-		worstSyncError = max(worstSyncError, syncError)
-		assert.Greater(t, robotTime, previousRobotTime)
-		if previousRobotTime != 0 && robotTime-previousRobotTime > 60_000 {
+	previousN, gaps := 0, 0
+	for i, pose := range poses {
+		require.Equal(t, "struct:Pose2d", pose.typeName)
+		require.Len(t, pose.payload, 24)
+		x, y, rotation := float64At(pose.payload, 0), float64At(pose.payload, 1), float64At(pose.payload, 2)
+		n := int(math.Round((x - 1.5) / 0.01))
+		sample, ok := sent[n]
+		require.True(t, ok, "pose %v doesn't match a sample the robot sent", []float64{x, y, rotation})
+		expectedX, expectedY, expectedRotation := fakePose(n)
+		assert.Equal(t, []float64{expectedX, expectedY, expectedRotation}, []float64{x, y, rotation})
+		worstSyncError = max(worstSyncError, time.UnixMicro(recordingEpoch+pose.timestamp).Sub(sample.wallTime).Abs())
+		assert.Greater(t, n, previousN)
+		if i > 0 && pose.timestamp-poses[i-1].timestamp > 60_000 {
 			gaps++
 		}
-		previousRobotTime = robotTime
+		previousN = n
 	}
 	note("== Worst clock conversion error %s, %d gap(s) over 60 ms", worstSyncError, gaps)
 	assert.Less(t, worstSyncError, 10*time.Millisecond)
 	assert.LessOrEqual(t, gaps, 1, "only the reconnect should leave a gap")
-	expectedRows := int(recordEnd.Sub(recordStart) / (20 * time.Millisecond))
-	assert.Greater(t, len(rows)-1, expectedRows*3/4, "about 50 rows a second")
+	expectedValues := int(recordEnd.Sub(recordStart) / (20 * time.Millisecond))
+	assert.Greater(t, len(poses), expectedValues*3/4, "about 50 a second")
 
-	rows = readCsv(t, filepath.Join(sessionDir, "254", "SmartDashboard_Field_Robot.csv"))
-	require.Equal(t, []string{"unix_time_us", "robot_time_us", "value"}, rows[0])
-	require.Greater(t, len(rows), 10)
-	assert.Regexp(t, `^\[\d+\.\d+,-2\.25,28\.6`, rows[1][2])
-	rows = readCsv(t, filepath.Join(sessionDir, "254", "AdvantageKit_RealOutputs_Superstructure_State.csv"))
-	assert.Equal(t, "INTAKING", rows[1][2])
-	rows = readCsv(t, filepath.Join(sessionDir, "1114", "Pose.csv"))
-	assert.Greater(t, len(rows), expectedRows*3/4)
+	fieldPoses := wpilogEntry(values, "NT:"+field2d)
+	require.Greater(t, len(fieldPoses), 10)
+	assert.Equal(t, "double[]", fieldPoses[0].typeName)
+	require.Len(t, fieldPoses[0].payload, 24)
+	assert.Equal(t, -2.25, float64At(fieldPoses[0].payload, 1))
+	assert.InDelta(t, 28.648, float64At(fieldPoses[0].payload, 2), 0.001)
+	states := wpilogEntry(values, "NT:"+state)
+	require.NotEmpty(t, states)
+	assert.Equal(t, "string", states[0].typeName)
+	assert.Equal(t, "INTAKING", string(states[0].payload))
+	moduleStates := wpilogEntry(values, "NT:"+modules)
+	require.NotEmpty(t, moduleStates)
+	assert.Equal(t, "struct:SwerveModuleState[]", moduleStates[0].typeName)
+	assert.Len(t, moduleStates[0].payload, 64)
+	poses = wpilogEntry(readWpilog(t, filepath.Join(sessionDir, "1114.wpilog")), "NT:/Pose")
+	assert.Greater(t, len(poses), expectedValues*3/4)
 
 	_ = os.RemoveAll(filepath.Join(outputDir, "recording"))
-	require.Nil(t, os.CopyFS(filepath.Join(outputDir, "recording"), os.DirFS(sessionDir)))
+	require.Nil(t, os.CopyFS(filepath.Join(outputDir, "recording", "wpilog"), os.DirFS(sessionDir)))
+
+	// (13) An unknown format is rejected. A CSV is in AdvantageScope's layout, and types it can't hold are unsupported.
+	_, settings = call("GET", "/api/settings", nil)
+	assert.Equal(t, "wpilog", settings["RecordingFormat"])
+	settings["RecordingFormat"] = "parquet"
+	status, _ = call("PUT", "/api/settings", settings)
+	assert.Equal(t, 400, status)
+	settings["RecordingFormat"] = "csv"
+	status, _ = call("PUT", "/api/settings", settings)
+	require.Equal(t, 200, status)
+	supported := supportedTopics(telemetryTeam(254))
+	assert.True(t, supported[odometry])
+	assert.False(t, supported[modules])
+	assert.False(t, supported["/.schema/struct:Pose2d"])
+
+	status, body = call("PUT", "/api/recording", map[string]any{"active": true})
+	require.Equal(t, 200, status)
+	recording = body["recording"].(map[string]any)
+	assert.Equal(t, "csv", recording["format"])
+	csvDir := recording["folder"].(string)
+	recordStart = time.Now()
+	time.Sleep(time.Second)
+	status, _ = call("PUT", "/api/recording", map[string]any{"active": false})
+	require.Equal(t, 200, status)
+	expectedValues = int(time.Since(recordStart) / (20 * time.Millisecond))
+	assert.Equal(t, []string{"1114.csv", "254.csv"}, sessionFiles(t, csvDir))
+	csvData, err := os.ReadFile(filepath.Join(csvDir, "254.csv"))
+	require.Nil(t, err)
+	lines := strings.Split(strings.TrimSuffix(string(csvData), "\n"), "\n")
+	note("== 254.csv: %d lines, starting %q", len(lines), lines[:min(7, len(lines))])
+	require.Equal(t, "Timestamp,Key,Value", lines[0])
+	rowsByKey := map[string][]string{}
+	for _, line := range lines[1:] {
+		// AdvantageScope splits rows on every comma and needs exactly three columns.
+		columns := strings.Split(line, ",")
+		require.Len(t, columns, 3, line)
+		_, err := strconv.ParseFloat(columns[0], 64)
+		require.Nil(t, err, line)
+		rowsByKey[columns[1]] = append(rowsByKey[columns[1]], columns[2])
+	}
+	assert.Len(t, rowsByKey["systemTime"], 1)
+	assert.Greater(t, len(rowsByKey["NT:"+odometry+"/translation/x"]), expectedValues*3/4)
+	for _, field := range []string{"/translation/y", "/rotation/value"} {
+		assert.Len(t, rowsByKey["NT:"+odometry+field], len(rowsByKey["NT:"+odometry+"/translation/x"]))
+	}
+	assert.Equal(t, "-2.25", rowsByKey["NT:"+odometry+"/translation/y"][0])
+	assert.Equal(t, `"INTAKING"`, rowsByKey["NT:"+state][0])
+	assert.Regexp(t, `^[[][0-9.]+; -2[.]25; 28[.]6[0-9]*[]]$`, rowsByKey["NT:"+field2d][0])
+	assert.Regexp(t, `^(00-){63}00$`, rowsByKey["NT:"+modules][0], "undecoded structs are hex bytes")
+	for key := range rowsByKey {
+		assert.NotContains(t, key, ".schema", "a CSV has no use for schemas")
+	}
+	require.Nil(t, os.CopyFS(filepath.Join(outputDir, "recording", "csv"), os.DirFS(csvDir)))
 
 	// (9) Taking 254 off the field closes its connection for good; its topics stay configured.
 	assign(0, 971, 1114)
@@ -578,7 +765,7 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	team254 = telemetryTeam(254)
 	assert.Equal(t, "offField", team254["connection"])
 	assert.Equal(t, "", team254["station"])
-	assert.Len(t, team254["topics"], 3)
+	assert.Len(t, team254["topics"], 4)
 
 	// (11) The topics are on the team record, next to its WPA key.
 	require.Nil(t, database.Close())
@@ -590,7 +777,7 @@ func TestTelemetryEndToEnd(t *testing.T) {
 				record := string(tx.Bucket([]byte("Team")).Get([]byte("254")))
 				note("== Team/254 %s", record)
 				assert.Contains(t, record, `"WpaKey":"key254key"`)
-				assert.Contains(t, record, fmt.Sprintf(`"NtTopics":["%s","%s","%s"]`, odometry, state, field2d))
+				assert.Contains(t, record, fmt.Sprintf(`"NtTopics":["%s","%s","%s","%s"]`, odometry, state, field2d, modules))
 				return nil
 			},
 		),

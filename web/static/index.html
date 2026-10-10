@@ -2,7 +2,7 @@
 <!--
 The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars, driver station
 state when FMS is on), NetworkTables topics recorded per team, the FMS mode control and Record button in the header,
-and network settings (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract); /demo.js fakes the API when the URL has ?demo,
+and settings for the network and recording format (grouped lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract); /demo.js fakes the API when the URL has ?demo,
 for previewing without field hardware.
 -->
 <html lang="en">
@@ -225,6 +225,7 @@ for previewing without field hardware.
   .row { display: grid; grid-template-columns: 200px 1fr; gap: 16px; align-items: center; padding: 10px 16px; position: relative; min-height: 48px; }
   .row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
   .row.top { align-items: start; } .row.top label { padding-top: 6px; }
+  .row label small { display: block; margin-top: 2px; font-size: 12px; color: var(--fg3); }
   .row input:not([type=checkbox]), .row select { background: var(--fill); padding: 6px 10px; width: 100%; max-width: 320px; justify-self: end; text-align: right; }
   .row select { text-align-last: right; }
   .row textarea { background: var(--fill); padding: 8px 10px; width: 100%; }
@@ -335,6 +336,10 @@ for previewing without field hardware.
   </section>
 
   <section id="settings-view" class="settings view" hidden>
+    <div class="caption">Recording</div>
+    <div class="list">
+      <div class="row"><label for="RecordingFormat">File format<small>Both open in AdvantageScope. Only WPILOG keeps poses for its field views.</small></label><select id="RecordingFormat"><option value="wpilog">WPILOG</option><option value="csv">CSV</option></select></div>
+    </div>
     <div class="caption">Access point</div>
     <div class="list">
       <div class="row"><label for="ApAddress">Address</label><input id="ApAddress" placeholder="10.0.100.2"></div>

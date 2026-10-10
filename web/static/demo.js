@@ -13,7 +13,8 @@
 //
 // Telemetry follows field/telemetry.go: every assigned team except 971 has a robot publishing NetworkTables, from one of
 // two made-up topic lists. Configured topics report 50 Hz and values that change over time, formatted as the server
-// formats them. Recording only counts; nothing is written anywhere.
+// formats them. Undecoded structs are supported only while the recording format is WPILOG. Recording only counts;
+// nothing is written anywhere.
 
 "use strict";
 
@@ -69,7 +70,7 @@
       };
     }),
     driverStationMode: "off",
-    recording: { active: false, startedAt: new Date(0).toISOString(), folder: "" },
+    recording: { active: false, startedAt: new Date(0).toISOString(), folder: "", format: "" },
     accessPointStatus: "ACTIVE",
     switchStatus: "ACTIVE",
     lastApplied: new Date().toISOString(),
@@ -80,7 +81,7 @@
     SCCManagementEnabled: false, RedSCCAddress: "10.0.100.48", BlueSCCAddress: "10.0.100.49", SCCUsername: "admin",
     SCCPassword: "", SCCUpCommands: "configure terminal\ninterface range gigabitEthernet 1/2-4\nno shutdown\nexit\nexit\nexit",
     SCCDownCommands: "configure terminal\ninterface range gigabitEthernet 1/2-4\nshutdown\nexit\nexit\nexit",
-    DefaultWpaKey: "",
+    DefaultWpaKey: "", RecordingFormat: "wpilog",
   };
 
   // Formats like Go's default logger: "2026/09/26 14:02:11 message".
@@ -253,7 +254,9 @@
         last: topic ? (topic[2] ? topic[2](t, phase) : "64 bytes") : "",
       };
     });
-    const available = published.map(([name, type, value]) => ({ name, type, supported: value !== null }));
+    const available = published.map(([name, type, value]) => ({
+      name, type, supported: value !== null || settings.RecordingFormat === "wpilog",
+    }));
     return { teamId, station, connection, topics, available };
   }
 
@@ -281,13 +284,14 @@
       const pad = (n) => String(n).padStart(2, "0");
       const folder = `recordings/${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_` +
         `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-      state.recording = { ...state.recording, active: true, startedAt: now.toISOString(), folder };
-      log(`Recording NetworkTables to ${folder}`);
+      const format = settings.RecordingFormat;
+      state.recording = { ...state.recording, active: true, startedAt: now.toISOString(), folder, format };
+      log(`Recording NetworkTables as ${format.toUpperCase()} to ${folder}`);
     } else if (!active && state.recording.active) {
       const topics = telemetry().teams.reduce((count, team) => count + team.topics.filter((t) => t.hz > 0).length, 0);
       const values = Math.round((Date.now() - new Date(state.recording.startedAt)) / 20) * topics;
       log(`Recorded ${values} values to ${state.recording.folder}`);
-      state.recording = { ...state.recording, active: false, folder: "" };
+      state.recording = { ...state.recording, active: false, folder: "", format: "" };
     }
     return [200, state];
   }
@@ -304,8 +308,10 @@
     if (method === "PUT" && path === "/api/settings") {
       const key = body.DefaultWpaKey ?? "";
       if (key && (key.length < 8 || key.length > 63)) return [400, { error: "default password must be 8 to 63 characters" }];
-      settings = body;
-      log("Network settings saved.");
+      const format = body.RecordingFormat || "wpilog";
+      if (!["wpilog", "csv"].includes(format)) return [400, { error: `unknown recording format "${format}"` }];
+      settings = { ...body, RecordingFormat: format };
+      log("Settings saved.");
       return [200, settings];
     }
     const team = path.match(/^\/api\/teams\/(\d+)$/);

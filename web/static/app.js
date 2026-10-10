@@ -44,6 +44,7 @@ const qualityStates = ["dim", "bad", "warn", "ok", "ok"];
 const settingsFields = [
   "ApAddress", "ApPassword", "ApChannel", "SwitchAddress", "SwitchPassword", "SCCManagementEnabled",
   "RedSCCAddress", "BlueSCCAddress", "SCCUsername", "SCCPassword", "SCCUpCommands", "SCCDownCommands", "DefaultWpaKey",
+  "RecordingFormat",
 ];
 const $ = (id) => document.getElementById(id);
 
@@ -336,7 +337,9 @@ function renderRecording() {
   const button = $("record");
   if (!button) return;
   setText($("record-label"), active ? formatElapsed(new Date(recording.startedAt)) : "Record");
-  button.title = active ? `Recording to ${recording.folder}. Click to stop.` : "Record NetworkTables topics";
+  button.title = active
+    ? `Recording ${recording.format.toUpperCase()} to ${recording.folder}. Click to stop.`
+    : "Record NetworkTables topics";
 }
 
 async function toggleRecording() {
@@ -462,7 +465,8 @@ function renderTeamDetail() {
     row.title = topic.name;
     setText(fieldOf(row, "type"), topic.type);
     row.classList.toggle("unsupported", !topic.supported);
-    const note = topic.supported ? "" : "not supported";
+    // Only CSV recordings leave types out; a WPILOG keeps them all.
+    const note = topic.supported ? "" : "WPILOG only";
     setText(fieldOf(row, "note"), note);
     fieldOf(row, "note").hidden = !note;
     row.querySelector("[data-action=add]").hidden = Boolean(note);

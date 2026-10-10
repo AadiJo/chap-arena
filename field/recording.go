@@ -1,49 +1,76 @@
-// Records NetworkTables values to CSV: one folder per recording session, one folder per team inside it, and one file
-// per topic, named after the topic path.
+// Records NetworkTables values in a format AdvantageScope opens: one folder per recording session, and one file per team
+// inside it, named for the team number (254.wpilog or 254.csv).
 //
-// Every file starts with unix_time_us (the robot timestamp converted to this computer's clock) and robot_time_us (the
-// robot's own timestamp, microseconds since it booted). Poses then have x, y (meters) and rotation (radians) columns;
-// anything else has one value column: numbers and strings as they are, arrays as JSON, and raw bytes (structs other
-// than Pose2d) as base64.
+// WPILOG (recording_wpilog.go) keeps every value with its type, as WPILib's DataLogManager does, so poses and other
+// structs work in AdvantageScope's field and swerve views. CSV (recording_csv.go) is AdvantageScope's own CSV layout,
+// for line graphs, tables and spreadsheets. Both name each topic "NT:" plus its path, as robot logs do, so AdvantageScope
+// layouts made for a team's own logs work on these too.
+//
+// Timestamps are microseconds since the recording started, on this computer's clock (a robot's own clock restarts when
+// it reboots), so the team files in a session share one timeline and line up when opened together in AdvantageScope.
+// Each file starts with a systemTime value giving this computer's wall clock time in microseconds since 1970, which
+// AdvantageScope also reads, so any timestamp t is at systemTime's value minus its timestamp plus t.
 
 package field
 
 import (
-	"encoding/base64"
-	"encoding/csv"
-	"encoding/json"
+	"bufio"
 	"fmt"
 	"github.com/Team254/cheesy-arena/nt"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
-	"strings"
+	"sort"
 	"time"
 )
 
-var unsafeFileNameCharacters = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+// Recording formats, as stored in model.EventSettings.RecordingFormat.
+const (
+	RecordingWpilog        = "wpilog"
+	RecordingCsv           = "csv"
+	DefaultRecordingFormat = RecordingWpilog
+)
+
+const (
+	ntKeyPrefix   = "NT:"        // Before each topic's path in a recording, as in DataLogManager's logs.
+	systemTimeKey = "systemTime" // DataLogManager's name for the wall clock, in microseconds since 1970.
+)
+
+// Topics holding struct and protobuf schemas, which AdvantageScope needs to decode a robot's structs: WPILib publishes
+// them under /.schema/, and AdvantageKit puts its own under its /AdvantageKit table.
+var (
+	schemaTopicPrefixes = []string{"/.schema/", "/AdvantageKit/.schema/"}
+	schemaTopic         = regexp.MustCompile(`^(/AdvantageKit)?/\.schema/`)
+)
 
 type recorder struct {
 	dir       string
+	format    string
 	startedAt time.Time
-	rows      int
-	files     map[recordingKey]*recordingFile
-	fileNames map[string]bool // Paths already used, relative to dir, to keep topics with similar names apart.
+	values    int
+	files     map[int]*teamFile           // By team id, created on the team's first value.
+	schemas   map[int]map[string]nt.Value // Each team's latest schemas, by topic name. Kept only for WPILOG.
 }
 
-type recordingKey struct {
-	teamId int
-	topic  string
-}
-
-type recordingFile struct {
+// One team's file in a recording.
+type teamFile struct {
 	file   *os.File
-	writer *csv.Writer
+	buffer *bufio.Writer
+	log    teamLog
+}
+
+// Writes values to a team's file in one format.
+type teamLog interface {
+	// Appends a value; timestamp is microseconds since the recording started.
+	write(timestamp int64, value nt.Value) error
+}
+
+func validRecordingFormat(format string) bool {
+	return format == RecordingWpilog || format == RecordingCsv
 }
 
 // Creates a new session folder under recordingsDir, named for the current time.
-func startRecorder(recordingsDir string) (*recorder, error) {
+func startRecorder(recordingsDir, format string) (*recorder, error) {
 	startedAt := time.Now()
 	base := filepath.Join(recordingsDir, startedAt.Format("2006-01-02_150405"))
 	dir := base
@@ -61,56 +88,80 @@ func startRecorder(recordingsDir string) (*recorder, error) {
 		absoluteDir = dir
 	}
 	return &recorder{
-		dir: absoluteDir, startedAt: startedAt, files: map[recordingKey]*recordingFile{}, fileNames: map[string]bool{},
+		dir: absoluteDir, format: format, startedAt: startedAt, files: map[int]*teamFile{},
+		schemas: map[int]map[string]nt.Value{},
 	}, nil
 }
 
-// Appends a value, creating the topic's file (with a header) on its first value.
+// Appends a value, creating the team's file on its first value.
 func (recorder *recorder) write(teamId int, value nt.Value) error {
-	key := recordingKey{teamId, value.Topic.Name}
-	file := recorder.files[key]
-	if file == nil {
-		var err error
-		if file, err = recorder.create(key, value.Data); err != nil {
-			return err
-		}
-		recorder.files[key] = file
+	timestamp := recorder.timestamp(value.Time)
+	file, err := recorder.file(teamId, timestamp)
+	if err != nil {
+		return err
 	}
-	row := []string{strconv.FormatInt(value.Time.UnixMicro(), 10), strconv.FormatInt(value.RobotTime, 10)}
-	row = append(row, csvValue(value.Data)...)
-	recorder.rows++
-	return file.writer.Write(row)
+	recorder.values++
+	return file.log.write(timestamp, value)
 }
 
-func (recorder *recorder) create(key recordingKey, data any) (*recordingFile, error) {
-	name := strings.Trim(unsafeFileNameCharacters.ReplaceAllString(key.topic, "_"), "_")
-	if name == "" {
-		name = "topic"
+// Keeps a schema the robot published (see schemaTopic) for the team's WPILOG, writing it now if the team's file exists
+// and otherwise once it's created. Schemas alone don't create a file. A CSV has no use for them.
+func (recorder *recorder) writeSchema(teamId int, value nt.Value) error {
+	if recorder.format != RecordingWpilog {
+		return nil
 	}
-	path := filepath.Join(strconv.Itoa(key.teamId), name+".csv")
-	for i := 2; recorder.fileNames[path]; i++ {
-		path = filepath.Join(strconv.Itoa(key.teamId), fmt.Sprintf("%s_%d.csv", name, i))
+	if recorder.schemas[teamId] == nil {
+		recorder.schemas[teamId] = map[string]nt.Value{}
 	}
-	recorder.fileNames[path] = true
-	if err := os.MkdirAll(filepath.Join(recorder.dir, strconv.Itoa(key.teamId)), 0755); err != nil {
-		return nil, err
+	recorder.schemas[teamId][value.Topic.Name] = value
+	if file := recorder.files[teamId]; file != nil {
+		return file.log.write(recorder.timestamp(value.Time), value)
 	}
-	osFile, err := os.Create(filepath.Join(recorder.dir, path))
+	return nil
+}
+
+// Microseconds from the start of the recording to t, or 0 for a value the robot stamped just before it started.
+func (recorder *recorder) timestamp(t time.Time) int64 {
+	return max(0, t.Sub(recorder.startedAt).Microseconds())
+}
+
+// Returns the team's file, creating it with its header, systemTime and any schemas already received if it's new.
+func (recorder *recorder) file(teamId int, timestamp int64) (*teamFile, error) {
+	if file := recorder.files[teamId]; file != nil {
+		return file, nil
+	}
+	osFile, err := os.Create(filepath.Join(recorder.dir, fmt.Sprintf("%d.%s", teamId, recorder.format)))
 	if err != nil {
 		return nil, err
 	}
-	file := &recordingFile{file: osFile, writer: csv.NewWriter(osFile)}
-	header := []string{"unix_time_us", "robot_time_us", "value"}
-	if _, ok := data.(nt.Pose2d); ok {
-		header = []string{"unix_time_us", "robot_time_us", "x", "y", "rotation"}
+	file := &teamFile{file: osFile, buffer: bufio.NewWriter(osFile)}
+	// Added before anything can fail, so close still closes the file.
+	recorder.files[teamId] = file
+	systemTime := recorder.startedAt.UnixMicro() + timestamp
+	if recorder.format == RecordingCsv {
+		file.log, err = newCsvLog(file.buffer, timestamp, systemTime)
+	} else {
+		file.log, err = newWpilog(file.buffer, timestamp, systemTime)
 	}
-	return file, file.writer.Write(header)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(recorder.schemas[teamId]))
+	for name := range recorder.schemas[teamId] {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := file.log.write(timestamp, recorder.schemas[teamId][name]); err != nil {
+			return nil, err
+		}
+	}
+	return file, nil
 }
 
 func (recorder *recorder) flush() error {
 	for _, file := range recorder.files {
-		file.writer.Flush()
-		if err := file.writer.Error(); err != nil {
+		if err := file.buffer.Flush(); err != nil {
 			return err
 		}
 	}
@@ -119,45 +170,14 @@ func (recorder *recorder) flush() error {
 
 // Flushes and closes every file. Returns the first error but closes them all regardless.
 func (recorder *recorder) close() error {
-	firstErr := recorder.flush()
+	var firstErr error
 	for _, file := range recorder.files {
+		if err := file.buffer.Flush(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 		if err := file.file.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
-}
-
-// The value columns for one row. Floats use the shortest form that reads back exactly.
-func csvValue(data any) []string {
-	number := func(value float64) string { return strconv.FormatFloat(value, 'g', -1, 64) }
-	switch value := data.(type) {
-	case nt.Pose2d:
-		return []string{number(value.X), number(value.Y), number(value.Rotation)}
-	case []nt.Pose2d:
-		poses := make([][3]float64, len(value))
-		for i, pose := range value {
-			poses[i] = [3]float64{pose.X, pose.Y, pose.Rotation}
-		}
-		return []string{jsonString(poses)}
-	case float64:
-		return []string{number(value)}
-	case int64:
-		return []string{strconv.FormatInt(value, 10)}
-	case bool:
-		return []string{strconv.FormatBool(value)}
-	case string:
-		return []string{value}
-	case []byte:
-		return []string{base64.StdEncoding.EncodeToString(value)}
-	}
-	return []string{jsonString(data)}
-}
-
-func jsonString(value any) string {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprint(value)
-	}
-	return string(data)
 }

@@ -1,9 +1,10 @@
 // NetworkTables telemetry: a read-only NT4 client on every robot assigned to a station, subscribed to the topics
-// configured for its team, with an optional recording of every value to CSV (see recording.go).
+// configured for its team, with an optional recording of every value to WPILOG or CSV (see recording.go).
 //
-// Each robot gets a topics-only subscription to everything, so the UI can list what it publishes, plus a value
-// subscription to just the configured topics at the robot's full rate. Topics are configured per team and saved on the
-// team record, so they follow the team to whatever station it's in.
+// Each robot gets a topics-only subscription to everything, so the UI can list what it publishes, a value subscription
+// to just the configured topics at the robot's full rate, and one to its struct and protobuf schemas, which a WPILOG
+// needs. Topics are configured per team and saved on the team record, so they follow the team to whatever station it's
+// in.
 
 package field
 
@@ -61,9 +62,11 @@ type TopicStatus struct {
 }
 
 type AvailableTopic struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Supported bool   `json:"supported"` // Whether values decode (see nt.Decodable); others are recorded as raw bytes.
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Whether the recording format keeps values of this type usefully: a WPILOG keeps every type, but a CSV only those
+	// that decode (see nt.Decodable), and has others as raw bytes.
+	Supported bool `json:"supported"`
 }
 
 // RecordingStatus is included in the field status.
@@ -71,6 +74,7 @@ type RecordingStatus struct {
 	Active    bool      `json:"active"`
 	StartedAt time.Time `json:"startedAt"`
 	Folder    string    `json:"folder"`
+	Format    string    `json:"format"` // RecordingWpilog or RecordingCsv; "" when not recording.
 }
 
 type telemetry struct {
@@ -95,7 +99,8 @@ type robotLink struct {
 
 	// Guarded by telemetry.mutex.
 	connected bool
-	available map[string]string // Topic name to type, from the robot's announcements.
+	available map[string]string   // Topic name to type, from the robot's announcements.
+	schemas   map[string]nt.Value // Latest value of each schema topic (see schemaTopic), by name.
 	stats     map[string]*topicStats
 }
 
@@ -198,18 +203,25 @@ func (telemetry *telemetry) setTopics(teamId int, topics []string) {
 	}
 }
 
-// Starts or stops recording. Starting while already recording does nothing.
-func (telemetry *telemetry) setRecording(active bool) error {
+// Starts recording in the given format, or stops. Starting while already recording does nothing.
+func (telemetry *telemetry) setRecording(active bool, format string) error {
 	telemetry.mutex.Lock()
 	defer telemetry.mutex.Unlock()
 	if active && telemetry.recorder == nil {
-		recorder, err := startRecorder(telemetry.recordingsDir)
+		recorder, err := startRecorder(telemetry.recordingsDir, format)
 		if err != nil {
 			return err
 		}
+		// Robots send their schemas once, when subscribed, which is usually long before recording starts. No team has a
+		// file yet, so these are only kept, and can't fail.
+		for teamId, link := range telemetry.links {
+			for _, schema := range link.schemas {
+				_ = recorder.writeSchema(teamId, schema)
+			}
+		}
 		telemetry.recorder = recorder
 		go telemetry.flushPeriodically(recorder)
-		log.Printf("Recording NetworkTables to %s", recorder.dir)
+		log.Printf("Recording NetworkTables as %s to %s", strings.ToUpper(format), recorder.dir)
 	} else if !active && telemetry.recorder != nil {
 		telemetry.stopRecording("")
 	}
@@ -227,7 +239,7 @@ func (telemetry *telemetry) stopRecording(reason string) {
 	if err != nil {
 		log.Printf("Error finishing recording: %v", err)
 	}
-	log.Printf("Recorded %d values to %s", recorder.rows, recorder.dir)
+	log.Printf("Recorded %d values to %s", recorder.values, recorder.dir)
 }
 
 // Flushes the recording once a second, so a crash loses at most a second of data.
@@ -254,18 +266,20 @@ func (telemetry *telemetry) recordingStatus() RecordingStatus {
 	if status.Active {
 		status.StartedAt = telemetry.recorder.startedAt
 		status.Folder = telemetry.recorder.dir
+		status.Format = telemetry.recorder.format
 	}
 	return status
 }
 
-func (telemetry *telemetry) status() TelemetryStatus {
+// Lists the teams, marking which topics the given recording format supports.
+func (telemetry *telemetry) status(format string) TelemetryStatus {
 	telemetry.mutex.Lock()
 	defer telemetry.mutex.Unlock()
 	status := TelemetryStatus{Teams: []TelemetryTeam{}}
 	listed := map[int]bool{}
 	for i, teamId := range telemetry.stationTeams {
 		if teamId != 0 {
-			status.Teams = append(status.Teams, telemetry.teamStatus(teamId, StationNames[i]))
+			status.Teams = append(status.Teams, telemetry.teamStatus(teamId, StationNames[i], format))
 			listed[teamId] = true
 		}
 	}
@@ -277,13 +291,13 @@ func (telemetry *telemetry) status() TelemetryStatus {
 	}
 	sort.Ints(others)
 	for _, teamId := range others {
-		status.Teams = append(status.Teams, telemetry.teamStatus(teamId, ""))
+		status.Teams = append(status.Teams, telemetry.teamStatus(teamId, "", format))
 	}
 	return status
 }
 
 // Caller holds the mutex.
-func (telemetry *telemetry) teamStatus(teamId int, station string) TelemetryTeam {
+func (telemetry *telemetry) teamStatus(teamId int, station, format string) TelemetryTeam {
 	team := TelemetryTeam{
 		TeamId: teamId, Station: station, Connection: ntOffField, Topics: []TopicStatus{}, Available: []AvailableTopic{},
 	}
@@ -294,7 +308,8 @@ func (telemetry *telemetry) teamStatus(teamId int, station string) TelemetryTeam
 			team.Connection = ntConnected
 		}
 		for name, typeName := range link.available {
-			team.Available = append(team.Available, AvailableTopic{name, typeName, nt.Decodable(typeName)})
+			supported := format == RecordingWpilog || nt.Decodable(typeName)
+			team.Available = append(team.Available, AvailableTopic{name, typeName, supported})
 		}
 		sort.Slice(team.Available, func(i, j int) bool { return team.Available[i].Name < team.Available[j].Name })
 		team.Available = team.Available[:min(len(team.Available), telemetryListLimit)]
@@ -345,6 +360,7 @@ func (telemetry *telemetry) run(link *robotLink, address string) {
 			telemetry.mutex.Lock()
 			link.connected = false
 			link.available = nil
+			link.schemas = nil
 			telemetry.mutex.Unlock()
 			if link.ctx.Err() != nil {
 				log.Printf("Disconnected from team %d's NetworkTables.", link.teamId)
@@ -367,8 +383,12 @@ func (telemetry *telemetry) serve(link *robotLink, conn *nt.Conn) error {
 	telemetry.mutex.Lock()
 	link.connected = true
 	link.available = map[string]string{}
+	link.schemas = map[string]nt.Value{}
 	telemetry.mutex.Unlock()
 	if _, err := conn.Subscribe(ctx, []string{""}, nt.SubscribeOptions{TopicsOnly: true, Prefix: true}); err != nil {
+		return err
+	}
+	if _, err := conn.Subscribe(ctx, schemaTopicPrefixes, nt.SubscribeOptions{All: true, Prefix: true}); err != nil {
 		return err
 	}
 	valueSubuid := 0
@@ -428,6 +448,14 @@ func (telemetry *telemetry) handle(link *robotLink, event nt.Event) {
 	case nt.Unannounce:
 		delete(link.available, event.Topic.Name)
 	case nt.Value:
+		if schemaTopic.MatchString(event.Topic.Name) {
+			link.schemas[event.Topic.Name] = event
+			if telemetry.recorder != nil {
+				if err := telemetry.recorder.writeSchema(link.teamId, event); err != nil {
+					telemetry.stopRecording(err.Error())
+				}
+			}
+		}
 		// A value can still arrive for a topic that was just removed, before the robot sees the unsubscribe.
 		if !slices.Contains(telemetry.topics[link.teamId], event.Topic.Name) {
 			return

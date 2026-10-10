@@ -105,6 +105,9 @@ func New(database *model.Database, options Options) (*Field, error) {
 	for _, team := range teams {
 		topics[team.Id] = team.NtTopics
 	}
+	if settings.RecordingFormat == "" {
+		settings.RecordingFormat = DefaultRecordingFormat
+	}
 	field := Field{
 		database:       database,
 		driverStations: newDriverStations(options.DriverStationPorts),
@@ -141,14 +144,21 @@ func (field *Field) Settings() model.EventSettings {
 	return field.settings
 }
 
-// Saves the network settings and rebuilds the hardware clients. It does not push anything to the hardware; the next
-// apply (or the AP monitoring loop) uses the new settings. Returns a ValidationError, saving nothing, if the default WPA
-// key isn't a usable key.
+// Saves the settings and rebuilds the hardware clients. It does not push anything to the hardware; the next apply (or
+// the AP monitoring loop) uses the new settings, and the next recording uses the new format. A blank recording format
+// means the default. Returns a ValidationError, saving nothing, if the default WPA key isn't a usable key or the
+// recording format is unknown.
 func (field *Field) UpdateSettings(settings model.EventSettings) error {
 	if key := settings.DefaultWpaKey; key != "" && (len(key) < minWpaKeyLength || len(key) > maxWpaKeyLength) {
 		return ValidationError(
 			fmt.Sprintf("default password must be %d to %d characters", minWpaKeyLength, maxWpaKeyLength),
 		)
+	}
+	if settings.RecordingFormat == "" {
+		settings.RecordingFormat = DefaultRecordingFormat
+	}
+	if !validRecordingFormat(settings.RecordingFormat) {
+		return ValidationError(fmt.Sprintf("unknown recording format %q", settings.RecordingFormat))
 	}
 	field.mutex.Lock()
 	defer field.mutex.Unlock()
@@ -158,7 +168,7 @@ func (field *Field) UpdateSettings(settings model.EventSettings) error {
 		return err
 	}
 	field.loadSettings(settings)
-	log.Println("Network settings saved.")
+	log.Println("Settings saved.")
 	return nil
 }
 
@@ -258,13 +268,20 @@ func (field *Field) SetTeamTopics(teamId int, topics []string) error {
 	return nil
 }
 
-// Starts or stops recording every configured topic to a new folder under Options.RecordingsDir.
+// Starts or stops recording every configured topic to a new folder under Options.RecordingsDir, in the format chosen
+// in settings.
 func (field *Field) SetRecording(active bool) error {
-	return field.telemetry.setRecording(active)
+	return field.telemetry.setRecording(active, field.recordingFormat())
 }
 
 func (field *Field) Telemetry() TelemetryStatus {
-	return field.telemetry.status()
+	return field.telemetry.status(field.recordingFormat())
+}
+
+func (field *Field) recordingFormat() string {
+	field.mutex.Lock()
+	defer field.mutex.Unlock()
+	return field.settings.RecordingFormat
 }
 
 func (field *Field) Status() Status {
