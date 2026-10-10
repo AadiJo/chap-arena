@@ -96,6 +96,25 @@ ip access-list extended DS-FMS
  permit tcp any eq 5810 10.0.100.0 0.0.0.255 established
 ```
 
+## Recordings page for driver stations
+
+Driver stations can browse and download every recording at `http://10.0.100.5/`. It's a separate, read-only server on
+port 80 (change it with `-recordings-port`), so teams can't reach the admin UI, which can enable robots and shows WPA
+keys and passwords. The log shows the page's address at startup, or why it couldn't start (on Linux, port 80 needs
+root).
+
+A team's network only reaches the FMS while that team is assigned to a station, so teams should download their logs
+before the next match's stations are applied. A computer on the admin network (`10.0.100.x`) can reach the page at any
+time. On Windows, allow the firewall prompt the first time the app starts.
+
+The field switch has to let driver stations reach port 80. `switch_config.txt` includes the line; add it to the
+`DS-FMS` access list on a switch set up from an older copy. Don't open port 8080, the admin UI, to team networks.
+
+```
+ip access-list extended DS-FMS
+ permit tcp any host 10.0.100.5 eq www
+```
+
 ## Settings page
 
 Access point address, API password, channel and default WPA key; switch address and password; and optional SCC switch
