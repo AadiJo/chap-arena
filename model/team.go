@@ -10,7 +10,8 @@ package model
 type Team struct {
 	Id     int `db:"id,manual"`
 	WpaKey string
-	// NetworkTables topics recorded from this team's robot (see field/telemetry.go).
+	// What's recorded from this team's robot: topic names, sections ending in "/", and either with "!" in front to
+	// exclude it (see field/telemetry.go).
 	NtTopics []string
 }
 

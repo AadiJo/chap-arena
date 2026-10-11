@@ -63,8 +63,10 @@ overhead camera. Topics are saved per team (in `event.db`, next to its WPA key),
 station.
 
 The app connects to every robot on the field as a read-only NT4 client (`10.TE.AM.2:5810`, named `chap-arena`) and
-lists everything the robot publishes. Click + to record a topic, which moves it up to the recorded list, and - to stop
-recording it. You can also type a path for a robot that isn't connected yet. Each recorded topic shows its rate and
+shows everything the robot publishes as a tree, like AdvantageScope's sidebar. A green + records a topic, or a whole
+section, which also picks up topics the robot publishes under it later. A red - stops recording; inside a saved section
+it leaves out just that topic. Search sits above the tree, and typing a path that starts with `/` offers to record it
+even if the robot isn't connected yet. Recording lists only what's recorded. Each recorded topic shows its rate and
 last value.
 
 Record, in the header, starts a session folder in `recordings/` next to the database, with one file per team named for

@@ -1,10 +1,15 @@
-// NetworkTables telemetry: a read-only NT4 client on every robot assigned to a station, subscribed to the topics
-// configured for its team, with an optional recording of every value to WPILOG or CSV (see recording.go).
+// NetworkTables telemetry: a read-only NT4 client on every robot assigned to a station, subscribed to what its team
+// records, with an optional recording of every value to WPILOG or CSV (see recording.go).
 //
-// Each robot gets a topics-only subscription to everything, so the UI can list what it publishes, a value subscription
-// to just the configured topics at the robot's full rate, and one to its struct and protobuf schemas, which a WPILOG
-// needs. Topics are configured per team and saved on the team record, so they follow the team to whatever station it's
-// in.
+// Each robot gets a topics-only subscription to everything, so the UI can list what it publishes, value subscriptions
+// to what its team records at the robot's full rate, and one to its struct and protobuf schemas, which a WPILOG needs.
+//
+// What a team records is a list of entries, saved on the team record so it follows the team to whatever station it's
+// in. An entry is a topic name, or a section ending in "/" that covers every topic under it, including ones the robot
+// publishes later. A "!" in front excludes instead, so a saved section can leave out a topic or a smaller section. The
+// most specific entry decides: one naming the topic itself, else the longest section above it. Sections are subscribed
+// to by prefix and excluded topics are dropped as their values arrive. web/static/topics.js applies the same rules in
+// the browser.
 
 package field
 
@@ -49,9 +54,12 @@ type TelemetryTeam struct {
 	TeamId  int    `json:"teamId"`
 	Station string `json:"station"` // "" when not assigned.
 	// "connected", "disconnected" (assigned, but its NT server can't be reached) or "offField".
-	Connection string           `json:"connection"`
-	Topics     []TopicStatus    `json:"topics"`    // Configured topics, in the order they were added.
-	Available  []AvailableTopic `json:"available"` // Everything the robot publishes, by name. Empty unless connected.
+	Connection string   `json:"connection"`
+	Entries    []string `json:"entries"` // What the team records, as saved (see the top of this file).
+	// Recorded topics: those saved by name, in the order they were added, then those a saved section picks up from what
+	// the robot publishes, by name. A section skips types the recording format can't hold.
+	Topics    []TopicStatus    `json:"topics"`
+	Available []AvailableTopic `json:"available"` // Everything the robot publishes, by name. Empty unless connected.
 }
 
 type TopicStatus struct {
@@ -85,8 +93,8 @@ type telemetry struct {
 	mutex        sync.Mutex
 	stationTeams [6]int
 	links        map[int]*robotLink        // Assigned teams, by team id.
-	topics       map[int][]string          // Configured topics, only for teams with at least one.
-	types        map[int]map[string]string // Last known type of each configured topic, kept while a robot is away.
+	topics       map[int][]string          // Each team's entries, only for teams with at least one.
+	types        map[int]map[string]string // Last known type of each topic saved by name, kept while a robot is away.
 	recorder     *recorder                 // nil unless recording.
 }
 
@@ -95,7 +103,7 @@ type robotLink struct {
 	teamId        int
 	ctx           context.Context
 	cancel        context.CancelFunc
-	topicsChanged chan struct{} // Nudges the connection to resubscribe with the team's current topics.
+	topicsChanged chan struct{} // Nudges the connection to resubscribe with the team's current entries.
 
 	// Guarded by telemetry.mutex.
 	connected bool
@@ -122,14 +130,19 @@ func newTelemetry(ntAddress func(teamId int) string, recordingsDir string, topic
 	return telemetry
 }
 
-// Cleans up topic names as entered: trims whitespace and drops blanks and duplicates. Returns a ValidationError if
-// there are too many or one is too long.
+// Cleans up entries as entered: trims whitespace, including after a "!", and drops blanks and duplicates. Returns a
+// ValidationError if there are too many or one is too long.
 func normalizeTopics(topics []string) ([]string, error) {
 	seen := map[string]bool{}
 	var normalized []string
 	for _, topic := range topics {
-		topic = strings.TrimSpace(topic)
-		if topic == "" || seen[topic] {
+		path, excluded := strings.CutPrefix(strings.TrimSpace(topic), "!")
+		if path = strings.TrimSpace(path); excluded {
+			topic = "!" + path
+		} else {
+			topic = path
+		}
+		if path == "" || seen[topic] {
 			continue
 		}
 		if len(topic) > maxTopicNameLength {
@@ -142,6 +155,46 @@ func normalizeTopics(topics []string) ([]string, error) {
 		return nil, ValidationError(fmt.Sprintf("at most %d topics per team", maxTopicsPerTeam))
 	}
 	return normalized, nil
+}
+
+// Reports whether a team's entries record a topic, and whether an entry names the topic itself rather than a section
+// above it (see the top of this file).
+func recordedBy(entries []string, name string) (recorded, exact bool) {
+	if slices.Contains(entries, name) {
+		return true, true
+	}
+	if slices.Contains(entries, "!"+name) {
+		return false, true
+	}
+	longest := 0
+	for _, entry := range entries {
+		path, excluded := strings.CutPrefix(entry, "!")
+		if strings.HasSuffix(path, "/") && strings.HasPrefix(name, path) && len(path) > longest {
+			longest, recorded = len(path), !excluded
+		}
+	}
+	return recorded, false
+}
+
+// Splits a team's entries into the topic names and the section prefixes to subscribe to. Exclusions aren't subscribed.
+func subscriptionsFor(entries []string) (names, sections []string) {
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "!") {
+			continue
+		}
+		if strings.HasSuffix(entry, "/") {
+			sections = append(sections, entry)
+		} else {
+			names = append(names, entry)
+		}
+	}
+	return names, sections
+}
+
+// Whether a recording format keeps values of a type usefully: a WPILOG keeps every type, but a CSV only those that
+// decode (see nt.Decodable), and has others as raw bytes.
+func formatHolds(format, typeName string) bool {
+	return format == RecordingWpilog || nt.Decodable(typeName)
 }
 
 // Connects to newly assigned robots and disconnects from robots whose team left the field.
@@ -176,7 +229,7 @@ func (telemetry *telemetry) setStations(teamIds [6]int) {
 	}
 }
 
-// Replaces a team's configured topics (already normalized) and resubscribes if its robot is connected.
+// Replaces a team's entries (already normalized) and resubscribes if its robot is connected.
 func (telemetry *telemetry) setTopics(teamId int, topics []string) {
 	telemetry.mutex.Lock()
 	defer telemetry.mutex.Unlock()
@@ -192,7 +245,7 @@ func (telemetry *telemetry) setTopics(teamId int, topics []string) {
 			}
 		}
 		for name := range link.stats {
-			if !slices.Contains(topics, name) {
+			if recorded, _ := recordedBy(topics, name); !recorded {
 				delete(link.stats, name)
 			}
 		}
@@ -308,14 +361,25 @@ func (telemetry *telemetry) teamStatus(teamId int, station, format string) Telem
 			team.Connection = ntConnected
 		}
 		for name, typeName := range link.available {
-			supported := format == RecordingWpilog || nt.Decodable(typeName)
-			team.Available = append(team.Available, AvailableTopic{name, typeName, supported})
+			team.Available = append(team.Available, AvailableTopic{name, typeName, formatHolds(format, typeName)})
 		}
 		sort.Slice(team.Available, func(i, j int) bool { return team.Available[i].Name < team.Available[j].Name })
 		team.Available = team.Available[:min(len(team.Available), telemetryListLimit)]
 	}
+	entries := telemetry.topics[teamId]
+	team.Entries = append([]string{}, entries...)
+	names, _ := subscriptionsFor(entries)
+	var picked []string
+	if link != nil {
+		for name, typeName := range link.available {
+			if recorded, exact := recordedBy(entries, name); recorded && !exact && formatHolds(format, typeName) {
+				picked = append(picked, name)
+			}
+		}
+	}
+	sort.Strings(picked)
 	now := time.Now()
-	for _, name := range telemetry.topics[teamId] {
+	for _, name := range slices.Concat(names, picked) {
 		topic := TopicStatus{Name: name, Type: telemetry.types[teamId][name]}
 		if typeName, ok := link.availableType(name); ok {
 			topic.Type = typeName
@@ -391,23 +455,34 @@ func (telemetry *telemetry) serve(link *robotLink, conn *nt.Conn) error {
 	if _, err := conn.Subscribe(ctx, schemaTopicPrefixes, nt.SubscribeOptions{All: true, Prefix: true}); err != nil {
 		return err
 	}
-	valueSubuid := 0
+	// Topics saved by name are subscribed to exactly, and sections by prefix, so topics the robot publishes under them
+	// later arrive too.
+	var valueSubuids []int
 	subscribeValues := func() error {
-		if valueSubuid != 0 {
-			if err := conn.Unsubscribe(ctx, valueSubuid); err != nil {
+		for _, subuid := range valueSubuids {
+			if err := conn.Unsubscribe(ctx, subuid); err != nil {
 				return err
 			}
-			valueSubuid = 0
 		}
+		valueSubuids = nil
 		telemetry.mutex.Lock()
-		topics := telemetry.topics[link.teamId]
+		names, sections := subscriptionsFor(telemetry.topics[link.teamId])
 		telemetry.mutex.Unlock()
-		if len(topics) == 0 {
-			return nil
+		for _, subscription := range []struct {
+			topics []string
+			prefix bool
+		}{{names, false}, {sections, true}} {
+			if len(subscription.topics) == 0 {
+				continue
+			}
+			options := nt.SubscribeOptions{Periodic: ntValuePeriodSec, All: true, Prefix: subscription.prefix}
+			subuid, err := conn.Subscribe(ctx, subscription.topics, options)
+			if err != nil {
+				return err
+			}
+			valueSubuids = append(valueSubuids, subuid)
 		}
-		var err error
-		valueSubuid, err = conn.Subscribe(ctx, topics, nt.SubscribeOptions{Periodic: ntValuePeriodSec, All: true})
-		return err
+		return nil
 	}
 	if err := subscribeValues(); err != nil {
 		return err
@@ -456,8 +531,10 @@ func (telemetry *telemetry) handle(link *robotLink, event nt.Event) {
 				}
 			}
 		}
-		// A value can still arrive for a topic that was just removed, before the robot sees the unsubscribe.
-		if !slices.Contains(telemetry.topics[link.teamId], event.Topic.Name) {
+		// Drops excluded topics under a saved section, and any value that arrives for a topic that was just removed,
+		// before the robot sees the unsubscribe.
+		recorded, exact := recordedBy(telemetry.topics[link.teamId], event.Topic.Name)
+		if !recorded {
 			return
 		}
 		stats := link.stats[event.Topic.Name]
@@ -469,7 +546,8 @@ func (telemetry *telemetry) handle(link *robotLink, event nt.Event) {
 		stats.received = append(stats.received, now)
 		stats.trim(now)
 		stats.last = formatValue(event.Data)
-		if telemetry.recorder != nil {
+		// A section skips types the format can't hold; a topic saved by name is kept regardless.
+		if telemetry.recorder != nil && (exact || formatHolds(telemetry.recorder.format, event.Topic.Type)) {
 			if err := telemetry.recorder.write(link.teamId, event); err != nil {
 				telemetry.stopRecording(err.Error())
 			}
@@ -477,7 +555,7 @@ func (telemetry *telemetry) handle(link *robotLink, event nt.Event) {
 	}
 }
 
-// Keeps a configured topic's type so it still shows while the robot is away. Caller holds the mutex.
+// Keeps the type of a topic saved by name so it still shows while the robot is away. Caller holds the mutex.
 func (telemetry *telemetry) rememberType(teamId int, name, typeName string) {
 	if telemetry.types[teamId] == nil {
 		telemetry.types[teamId] = map[string]string{}

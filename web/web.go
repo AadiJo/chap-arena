@@ -128,8 +128,8 @@ func (web *Web) telemetryGetHandler(w http.ResponseWriter, r *http.Request) {
 	writeJson(w, http.StatusOK, web.field.Telemetry())
 }
 
-// Replaces a team's recorded topics from {"topics": [...]} and responds with the telemetry listing. Responds 400 for a
-// bad team number or topic list.
+// Replaces what a team records from {"topics": [...]}, a list of topic names, sections and exclusions (see
+// field/telemetry.go), and responds with the telemetry listing. Responds 400 for a bad team number or list.
 func (web *Web) teamTopicsPutHandler(w http.ResponseWriter, r *http.Request) {
 	teamId, err := strconv.Atoi(r.PathValue("teamId"))
 	if err != nil {

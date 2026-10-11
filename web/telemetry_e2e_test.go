@@ -17,6 +17,10 @@
 // 12. Struct schemas aren't subscribed to or recorded, so AdvantageScope can't decode structs. Robots send them once per
 //     connection, usually before recording starts, and AdvantageKit keeps its own under /AdvantageKit.
 // 13. The recording format setting is ignored, or a CSV isn't in the layout AdvantageScope imports.
+// 14. A saved section misses topics the robot starts publishing after the subscription.
+// 15. An excluded topic or section under a saved section is recorded anyway, or a topic saved by name inside an excluded
+//     section is dropped.
+// 16. A section puts types a CSV can't hold into one as raw bytes (a topic saved by name still keeps them).
 
 package web
 
@@ -102,6 +106,7 @@ type fakeRobot struct {
 	subscribeLog  []string
 	sent          map[string][]fakeSample
 	closeCurrent  func()
+	announce      func() // Announces new topics on the current connection.
 	open          bool
 }
 
@@ -150,6 +155,30 @@ func (robot *fakeRobot) serve(w http.ResponseWriter, r *http.Request) {
 		return ws.Write(ctx, typ, data)
 	}
 	announced := map[int]bool{}
+	// Announces topics a current subscription covers that this connection hasn't been told about yet.
+	announce := func() {
+		var announcements []map[string]any
+		robot.mutex.Lock()
+		for _, topic := range robot.topics {
+			if !announced[topic.id] && robot.matches(topic.name, false) {
+				announced[topic.id] = true
+				announcements = append(
+					announcements, map[string]any{
+						"method": "announce",
+						"params": map[string]any{"name": topic.name, "id": topic.id, "type": topic.typ, "properties": map[string]any{}},
+					},
+				)
+			}
+		}
+		robot.mutex.Unlock()
+		if len(announcements) > 0 {
+			body, _ := json.Marshal(announcements)
+			_ = write(websocket.MessageText, body)
+		}
+	}
+	robot.mutex.Lock()
+	robot.announce = announce
+	robot.mutex.Unlock()
 	go robot.publish(ctx, write)
 
 	for {
@@ -174,7 +203,6 @@ func (robot *fakeRobot) serve(w http.ResponseWriter, r *http.Request) {
 			Params map[string]any `json:"params"`
 		}
 		require.Nil(robot.t, json.Unmarshal(data, &messages))
-		var announcements []map[string]any
 		robot.mutex.Lock()
 		for _, message := range messages {
 			robot.subscribeLog = append(robot.subscribeLog, fmt.Sprintf("%s %v", message.Method, message.Params))
@@ -186,23 +214,18 @@ func (robot *fakeRobot) serve(w http.ResponseWriter, r *http.Request) {
 				delete(robot.subscriptions, subuid)
 			}
 		}
-		for _, topic := range robot.topics {
-			if !announced[topic.id] && robot.matches(topic.name, false) {
-				announced[topic.id] = true
-				announcements = append(
-					announcements, map[string]any{
-						"method": "announce",
-						"params": map[string]any{"name": topic.name, "id": topic.id, "type": topic.typ, "properties": map[string]any{}},
-					},
-				)
-			}
-		}
 		robot.mutex.Unlock()
-		if len(announcements) > 0 {
-			body, _ := json.Marshal(announcements)
-			_ = write(websocket.MessageText, body)
-		}
+		announce()
 	}
+}
+
+// Starts publishing a topic partway through a connection, as robot code does the first time it logs something.
+func (robot *fakeRobot) publishLater(topic fakeTopic) {
+	robot.mutex.Lock()
+	robot.topics = append(robot.topics, topic)
+	announce := robot.announce
+	robot.mutex.Unlock()
+	announce()
 }
 
 // Reports whether any current subscription covers the topic; valuesOnly skips topics-only subscriptions. Caller holds
@@ -554,10 +577,11 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	status, _ = call("PUT", "/api/teams/254/topics", map[string]any{"topics": "nope"})
 	assert.Equal(t, 400, status)
 
-	// (2, 3, 11) Configuring topics trims and dedupes them, saves them to the team, and subscribes to every value at
-	// the robot's full rate.
+	// (2, 3, 11) Configuring topics trims and dedupes them, drops blanks (an exclusion of nothing too), saves them to
+	// the team, and subscribes to every value at the robot's full rate.
 	status, body := call(
-		"PUT", "/api/teams/254/topics", map[string]any{"topics": []string{odometry, " " + state + " ", odometry, ""}},
+		"PUT", "/api/teams/254/topics",
+		map[string]any{"topics": []string{odometry, " " + state + " ", odometry, "", " ! "}},
 	)
 	require.Equal(t, 200, status)
 	require.NotNil(t, body["teams"])
@@ -697,6 +721,69 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	_ = os.RemoveAll(filepath.Join(outputDir, "recording"))
 	require.Nil(t, os.CopyFS(filepath.Join(outputDir, "recording", "wpilog"), os.DirFS(sessionDir)))
 
+	// (14, 15) A saved section records everything under it, including topics the robot starts publishing later. A "!"
+	// excludes a topic or a smaller section, and a topic saved by name still records inside an excluded section.
+	const (
+		realOutputs = "/AdvantageKit/RealOutputs/"
+		driveOutput = "/AdvantageKit/RealOutputs/Drive/"
+		visionPose  = "/AdvantageKit/RealOutputs/Odometry/VisionPose"
+		rotation    = "/AdvantageKit/RealOutputs/Drive/Rotation"
+	)
+	status, _ = call(
+		"PUT", "/api/teams/254/topics",
+		map[string]any{"topics": []string{realOutputs, "! " + driveOutput, modules, "!" + state, field2d}},
+	)
+	require.Equal(t, 200, status)
+	assert.Equal(
+		t, fmt.Sprint([]string{realOutputs, "!" + driveOutput, modules, "!" + state, field2d}),
+		fmt.Sprint(telemetryTeam(254)["entries"]), "saved as entered, without the space after the !",
+	)
+	require.Eventually(
+		t, func() bool {
+			names, _ := robot254.valueSubscriptions(false)
+			prefixes, _ := robot254.valueSubscriptions(true)
+			return fmt.Sprint(names) == fmt.Sprint([]string{modules, field2d}) &&
+				fmt.Sprint(prefixes) == fmt.Sprint([]string{"/.schema/", "/AdvantageKit/.schema/", realOutputs})
+		}, 3*time.Second, 50*time.Millisecond, "names exactly, sections by prefix, exclusions not at all",
+	)
+	status, body = call("PUT", "/api/recording", map[string]any{"active": true})
+	require.Equal(t, 200, status)
+	sectionsDir := body["recording"].(map[string]any)["folder"].(string)
+	time.Sleep(500 * time.Millisecond)
+	robot254.publishLater(poseTopic(8, visionPose))
+	robot254.publishLater(
+		fakeTopic{id: 9, name: rotation, typ: "struct:Rotation2d", value: func(n int) (int, any) {
+			return 5, make([]byte, 8)
+		}},
+	)
+	require.Eventually(
+		t, func() bool {
+			topic := topicStatus(telemetryTeam(254), visionPose)
+			return topic != nil && topic["hz"].(float64) >= 40
+		}, 5*time.Second, 200*time.Millisecond, "a topic published later under a saved section",
+	)
+	var recordedNames []string
+	for _, topic := range telemetryTeam(254)["topics"].([]any) {
+		recordedNames = append(recordedNames, topic.(map[string]any)["name"].(string))
+	}
+	assert.Equal(
+		t, []string{modules, field2d, odometry, visionPose}, recordedNames,
+		"saved by name first, then what the section picks up",
+	)
+	time.Sleep(300 * time.Millisecond)
+	status, _ = call("PUT", "/api/recording", map[string]any{"active": false})
+	require.Equal(t, 200, status)
+	values = readWpilog(t, filepath.Join(sectionsDir, "254.wpilog"))
+	for _, name := range []string{odometry, visionPose, modules, field2d} {
+		assert.NotEmpty(t, wpilogEntry(values, "NT:"+name), name)
+	}
+	for _, name := range []string{state, rotation, shooterRpm} {
+		assert.Empty(t, wpilogEntry(values, "NT:"+name), name)
+	}
+	assert.NotEmpty(t, robot254.samples(rotation), "the robot sent the excluded topic; the recorder dropped it")
+	note("== Sections recording: %d values of %s", len(wpilogEntry(values, "NT:"+visionPose)), visionPose)
+	require.Nil(t, os.CopyFS(filepath.Join(outputDir, "recording", "sections"), os.DirFS(sectionsDir)))
+
 	// (13) An unknown format is rejected. A CSV is in AdvantageScope's layout, and types it can't hold are unsupported.
 	_, settings = call("GET", "/api/settings", nil)
 	assert.Equal(t, "wpilog", settings["RecordingFormat"])
@@ -710,6 +797,19 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	assert.True(t, supported[odometry])
 	assert.False(t, supported[modules])
 	assert.False(t, supported["/.schema/struct:Pose2d"])
+
+	// (16) Drive's section picks up Rotation, which a CSV can't hold, alongside ModuleStates, saved by name.
+	status, _ = call(
+		"PUT", "/api/teams/254/topics", map[string]any{"topics": []string{odometry, state, field2d, modules, driveOutput}},
+	)
+	require.Equal(t, 200, status)
+	require.Eventually(
+		t, func() bool {
+			prefixes, _ := robot254.valueSubscriptions(true)
+			return slices.Contains(prefixes, driveOutput)
+		}, 3*time.Second, 50*time.Millisecond,
+	)
+	assert.Nil(t, topicStatus(telemetryTeam(254), rotation), "not listed as recorded in a CSV")
 
 	status, body = call("PUT", "/api/recording", map[string]any{"active": true})
 	require.Equal(t, 200, status)
@@ -744,7 +844,8 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	assert.Equal(t, "-2.25", rowsByKey["NT:"+odometry+"/translation/y"][0])
 	assert.Equal(t, `"INTAKING"`, rowsByKey["NT:"+state][0])
 	assert.Regexp(t, `^[[][0-9.]+; -2[.]25; 28[.]6[0-9]*[]]$`, rowsByKey["NT:"+field2d][0])
-	assert.Regexp(t, `^(00-){63}00$`, rowsByKey["NT:"+modules][0], "undecoded structs are hex bytes")
+	assert.Regexp(t, `^(00-){63}00$`, rowsByKey["NT:"+modules][0], "undecoded structs saved by name are hex bytes")
+	assert.Empty(t, rowsByKey["NT:"+rotation], "a section skips types a CSV can't hold")
 	for key := range rowsByKey {
 		assert.NotContains(t, key, ".schema", "a CSV has no use for schemas")
 	}
@@ -777,7 +878,10 @@ func TestTelemetryEndToEnd(t *testing.T) {
 				record := string(tx.Bucket([]byte("Team")).Get([]byte("254")))
 				note("== Team/254 %s", record)
 				assert.Contains(t, record, `"WpaKey":"key254key"`)
-				assert.Contains(t, record, fmt.Sprintf(`"NtTopics":["%s","%s","%s","%s"]`, odometry, state, field2d, modules))
+				assert.Contains(
+					t, record,
+					fmt.Sprintf(`"NtTopics":["%s","%s","%s","%s","%s"]`, odometry, state, field2d, modules, driveOutput),
+				)
 				return nil
 			},
 		),

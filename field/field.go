@@ -236,9 +236,10 @@ func (field *Field) SetDriverStationMode(mode DriverStationMode) error {
 	return field.driverStations.setMode(mode)
 }
 
-// Saves the NetworkTables topics to record for a team, replacing any it had, and resubscribes if its robot is
-// connected. Blank and duplicate names are dropped; an empty list stops recording the team. Returns a ValidationError,
-// saving nothing, for an invalid team number or too many topics.
+// Saves what to record from a team's robot, replacing what it had, and resubscribes if its robot is connected. Each
+// entry is a topic name, a section ending in "/", or either with "!" in front to exclude it (see telemetry.go). Blank
+// and duplicate entries are dropped; an empty list stops recording the team. Returns a ValidationError, saving nothing,
+// for an invalid team number or too many entries.
 func (field *Field) SetTeamTopics(teamId int, topics []string) error {
 	if teamId < 1 || teamId > maxTeamId {
 		return ValidationError(fmt.Sprintf("team number must be between 1 and %d", maxTeamId))
@@ -268,8 +269,8 @@ func (field *Field) SetTeamTopics(teamId int, topics []string) error {
 	return nil
 }
 
-// Starts or stops recording every configured topic to a new folder under Options.RecordingsDir, in the format chosen
-// in settings.
+// Starts or stops recording every team's topics to a new folder under Options.RecordingsDir, in the format chosen in
+// settings.
 func (field *Field) SetRecording(active bool) error {
 	return field.telemetry.setRecording(active, field.recordingFormat())
 }

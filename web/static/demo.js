@@ -12,9 +12,10 @@
 // off drops them all. Reassigning a station drops its driver station, which reconnects if the new team has one.
 //
 // Telemetry follows field/telemetry.go: every assigned team except 971 has a robot publishing NetworkTables, from one of
-// two made-up topic lists. Configured topics report 50 Hz and values that change over time, formatted as the server
-// formats them. Undecoded structs are supported only while the recording format is WPILOG. Recording only counts;
-// nothing is written anywhere.
+// two made-up topic lists, one shaped like an AdvantageKit robot's. Teams save entries (topics, sections and exclusions,
+// see topics.js); recorded topics report 50 Hz and values that change over time, formatted as the server formats them.
+// Undecoded structs are supported only while the recording format is WPILOG. Recording only counts; nothing is written
+// anywhere. Needs /topics.js loaded first.
 
 "use strict";
 
@@ -206,75 +207,142 @@
     return [200, state];
   }
 
-  // Topics each demo robot publishes: name, NT type, and a function of seconds since page load giving the formatted
-  // last value (null for types the server doesn't decode).
-  const pose = (t, phase) => {
-    const x = 8.27 + 3 * Math.cos(t / 3 + phase), y = 4.1 + 2 * Math.sin(t / 3 + phase);
-    return `${x.toFixed(2)}, ${y.toFixed(2)}, ${(((t / 3 + phase) * 180 / Math.PI + 90) % 360 - 180).toFixed(1)}°`;
-  };
+  // Topics each demo robot publishes, by name and NT type. The AdvantageKit list is laid out like a real AdvantageKit
+  // robot's, so sections have something to hold.
+  const group = (prefix, fields) => fields.map(([name, type]) => ({ name: prefix + name, type }));
+  const moduleFields = [
+    ["DrivePositionRad", "double"], ["DriveVelocityRadPerSec", "double"], ["DriveAppliedVolts", "double"],
+    ["DriveCurrentAmps", "double"], ["TurnAbsolutePosition", "struct:Rotation2d"], ["TurnPosition", "struct:Rotation2d"],
+    ["TurnVelocityRadPerSec", "double"], ["TurnAppliedVolts", "double"], ["TurnCurrentAmps", "double"],
+  ];
+  const motor = (unit) => [
+    [`Position${unit}`, "double"], [`Velocity${unit}PerSec`, "double"], ["AppliedVolts", "double"],
+    ["CurrentAmps", "double"], ["TempCelsius", "double"],
+  ];
+  const fmsInfo = group("/FMSInfo/", [
+    ["IsRedAlliance", "boolean"], ["StationNumber", "int"], ["MatchNumber", "int"], ["EventName", "string"],
+    ["GameSpecificMessage", "string"],
+  ]);
   const topicLists = {
     advantageKit: [
-      ["/AdvantageKit/DriverStation/Enabled", "boolean", () => "false"],
-      ["/AdvantageKit/RealOutputs/Drive/ModuleStates", "struct:SwerveModuleState[]", null],
-      ["/AdvantageKit/RealOutputs/Odometry/Robot", "struct:Pose2d", pose],
-      ["/AdvantageKit/RealOutputs/Odometry/Trajectory", "struct:Pose2d[]", () => "12 poses"],
-      ["/AdvantageKit/RealOutputs/Superstructure/State", "string", (t) => (t % 8 < 4 ? '"INTAKING"' : '"SCORING"')],
-      ["/AdvantageKit/RealOutputs/Vision/Summary/RobotPoses", "struct:Pose3d[]", null],
-      ["/SmartDashboard/Field/Robot", "double[]", (t, phase) => pose(t, phase).replace("°", "")],
-      ["/SmartDashboard/Shooter RPM", "double", (t) => (4180 + 20 * Math.sin(t)).toFixed(1)],
+      ...group("/AdvantageKit/DriverStation/", [
+        ["Enabled", "boolean"], ["Autonomous", "boolean"], ["AllianceStation", "int"], ["MatchTime", "double"],
+        ["FMSAttached", "boolean"], ["EmergencyStop", "boolean"],
+      ]),
+      ...group("/AdvantageKit/SystemStats/", [
+        ["BatteryVoltage", "double"], ["BatteryCurrent", "double"], ["BrownedOut", "boolean"],
+        ["CANBus/Utilization", "double"], ["CANBus/ReceiveErrorCount", "int"], ["CANBus/TransmitErrorCount", "int"],
+      ]),
+      ...group("/AdvantageKit/Drive/Gyro/", [["Connected", "boolean"], ["YawPosition", "struct:Rotation2d"]]),
+      ...[0, 1, 2, 3].flatMap((i) => group(`/AdvantageKit/Drive/Module${i}/`, moduleFields)),
+      ...group("/AdvantageKit/Elevator/", motor("Meters")),
+      ...group("/AdvantageKit/Wrist/", motor("Rad")),
+      ...["Camera0", "Camera1"].flatMap((camera) => group(`/AdvantageKit/Vision/${camera}/`, [
+        ["Connected", "boolean"], ["TagIds", "int[]"], ["LatencySecs", "double"],
+      ])),
+      ...group("/AdvantageKit/RealOutputs/Drive/", [
+        ["ModuleStates", "struct:SwerveModuleState[]"], ["ModuleSetpoints", "struct:SwerveModuleState[]"],
+        ["ChassisSpeeds", "struct:ChassisSpeeds"],
+      ]),
+      ...group("/AdvantageKit/RealOutputs/Odometry/", [
+        ["Robot", "struct:Pose2d"], ["Trajectory", "struct:Pose2d[]"], ["TrajectorySetpoint", "struct:Pose2d"],
+      ]),
+      ...group("/AdvantageKit/RealOutputs/Superstructure/", [
+        ["Goal", "string"], ["State", "string"], ["ElevatorHeight", "double"], ["WristAngle", "double"],
+      ]),
+      ...group("/AdvantageKit/RealOutputs/Vision/Summary/", [["RobotPoses", "struct:Pose3d[]"], ["TagPoses", "struct:Pose3d[]"]]),
+      ...group("/AdvantageKit/RealOutputs/", [["LoopTimeMs", "double"], ["MatchPhase", "string"]]),
+      ...group("/SmartDashboard/", [["Field/Robot", "double[]"], ["Auto Choices/active", "string"], ["Auto Choices/options", "string[]"]]),
+      ...fmsInfo,
     ],
     basic: [
-      ["/FMSInfo/IsRedAlliance", "boolean", () => "true"],
-      ["/SmartDashboard/Field/Robot", "double[]", (t, phase) => pose(t, phase).replace("°", "")],
-      ["/SmartDashboard/Gyro", "double", (t) => ((t * 20) % 360).toFixed(1)],
-      ["/SmartDashboard/Auto choices", "string[]", () => '"Left", "Center", "Right"'],
+      ...group("/SmartDashboard/", [
+        ["Field/Robot", "double[]"], ["Gyro", "double"], ["Shooter RPM", "double"], ["Intake/HasNote", "boolean"],
+        ["Auto choices/active", "string"], ["Auto choices/options", "string[]"],
+      ]),
+      ...fmsInfo,
     ],
   };
   const robotTopicList = { 254: "advantageKit", 6328: "advantageKit", 118: "advantageKit" };
   const unreachableRobots = new Set([971]);
-  const teamTopics = new Map([
-    [254, ["/AdvantageKit/RealOutputs/Odometry/Robot", "/AdvantageKit/RealOutputs/Superstructure/State"]],
+  // What each team records, as saved entries (see topics.js).
+  const teamEntries = new Map([
+    [254, ["/AdvantageKit/RealOutputs/Odometry/", "/AdvantageKit/RealOutputs/Drive/ModuleStates", "/AdvantageKit/RealOutputs/Superstructure/State", "/AdvantageKit/SystemStats/BatteryVoltage"]],
     [1678, ["/SmartDashboard/Field/Robot"]],
     [971, ["/SmartDashboard/Field/Robot"]],
     [2056, ["/Pose"]],
   ]);
+  // Types a CSV can hold (nt.Decodable); a WPILOG holds every type.
+  const decodable = new Set([
+    "boolean", "double", "float", "int", "string", "json", "boolean[]", "double[]", "float[]", "int[]", "string[]",
+    "struct:Pose2d", "struct:Pose2d[]",
+  ]);
   const pageLoaded = Date.now();
+
+  // A topic's last value t seconds after page load, formatted as the server's formatValue would.
+  function valueOf({ name, type }, t, phase) {
+    const leaf = name.slice(name.lastIndexOf("/") + 1);
+    const wave = (mid, amp) => mid + amp * Math.sin(t + phase + name.length);
+    const a = t / 3 + phase;
+    const [x, y, degrees] = [8.27 + 3 * Math.cos(a), 4.1 + 2 * Math.sin(a), (((a * 180) / Math.PI + 90) % 360) - 180];
+    switch (type) {
+      case "struct:Pose2d": return `${x.toFixed(2)}, ${y.toFixed(2)}, ${degrees.toFixed(1)}°`;
+      case "struct:Pose2d[]": return "12 poses";
+      case "double[]": return `${x.toFixed(2)}, ${y.toFixed(2)}, ${degrees.toFixed(1)}`;
+      case "boolean": return String(/Connected|FMSAttached|IsRedAlliance/.test(leaf));
+      case "int": return leaf === "MatchNumber" ? "42" : "0";
+      case "int[]": return "4, 7";
+      case "string": return leaf === "State" ? (t % 8 < 4 ? '"INTAKING"' : '"SCORING"') : leaf === "Goal" ? '"L4"' : '"Center"';
+      case "string[]": return '"Left", "Center", "Right"';
+      case "double":
+        if (/Voltage/.test(leaf)) return wave(12.4, 0.15).toFixed(2);
+        if (/Current/.test(leaf)) return Math.abs(wave(18, 14)).toFixed(2);
+        return wave(0, 3).toFixed(3);
+      default: return `${type.endsWith("[]") ? 64 : 24} bytes`;
+    }
+  }
 
   function telemetryTeam(teamId, station) {
     const connection = !station ? "offField" : unreachableRobots.has(teamId) ? "disconnected" : "connected";
     const published = connection === "connected" ? topicLists[robotTopicList[teamId] ?? "basic"] : [];
+    const entries = teamEntries.get(teamId) ?? [];
+    const supported = (type) => settings.RecordingFormat === "wpilog" || decodable.has(type);
     const t = (Date.now() - pageLoaded) / 1000;
     const phase = teamId % 7;
-    const topics = (teamTopics.get(teamId) ?? []).map((name) => {
-      const topic = published.find(([topicName]) => topicName === name);
-      return {
-        name,
-        type: topic?.[1] ?? "",
-        hz: topic ? 50 : 0,
-        last: topic ? (topic[2] ? topic[2](t, phase) : "64 bytes") : "",
-      };
+    const status = (name, type, live) => ({ name, type, hz: live ? 50 : 0, last: live ? valueOf({ name, type }, t, phase) : "" });
+    // Saved by name first, then what a saved section picks up, as in field/telemetry.go.
+    const byName = entries.filter((entry) => !isSection(entry) && !isExclusion(entry)).map((name) => {
+      const topic = published.find((topic) => topic.name === name);
+      return status(name, topic?.type ?? "double[]", Boolean(topic));
     });
-    const available = published.map(([name, type, value]) => ({
-      name, type, supported: value !== null || settings.RecordingFormat === "wpilog",
-    }));
-    return { teamId, station, connection, topics, available };
+    const picked = published.filter((topic) => {
+      const { recorded, exact } = recordedBy(entries, topic.name);
+      return recorded && !exact && supported(topic.type);
+    }).sort((a, b) => (a.name < b.name ? -1 : 1)).map((topic) => status(topic.name, topic.type, true));
+    const available = published.map(({ name, type }) => ({ name, type, supported: supported(type) }));
+    return { teamId, station, connection, entries, topics: [...byName, ...picked], available };
   }
 
   function telemetry() {
     const teams = state.stations.filter((s) => s.assignment.teamId).map((s) => telemetryTeam(s.assignment.teamId, s.station));
     const listed = new Set(teams.map((team) => team.teamId));
-    for (const teamId of [...teamTopics.keys()].sort((a, b) => a - b)) {
+    for (const teamId of [...teamEntries.keys()].sort((a, b) => a - b)) {
       if (!listed.has(teamId)) teams.push(telemetryTeam(teamId, ""));
     }
     return { teams };
   }
 
+  // Saves entries the way field.normalizeTopics cleans them up: trimmed (after a "!" too), without blanks or duplicates.
   function setTeamTopics(teamId, body) {
     if (!(teamId >= 1 && teamId <= maxTeamId)) return [400, { error: `team number must be between 1 and ${maxTeamId}` }];
     if (!Array.isArray(body.topics)) return [400, { error: "topics must be a list" }];
-    const topics = [...new Set(body.topics.map((topic) => topic.trim()).filter(Boolean))];
-    if (topics.length) teamTopics.set(teamId, topics);
-    else teamTopics.delete(teamId);
+    const entries = [...new Set(body.topics.map((entry) => {
+      const trimmed = entry.trim();
+      return isExclusion(trimmed) ? (trimmed.slice(1).trim() ? `!${trimmed.slice(1).trim()}` : "") : trimmed;
+    }).filter(Boolean))];
+    if (entries.length > 50) return [400, { error: "at most 50 topics per team" }];
+    if (entries.length) teamEntries.set(teamId, entries);
+    else teamEntries.delete(teamId);
     return [200, telemetry()];
   }
 
