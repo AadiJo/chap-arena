@@ -26,6 +26,26 @@ page.
 Add `?demo` to the URL (http://localhost:8080/?demo) to try the UI with simulated hardware. Nothing is sent to the
 server in demo mode.
 
+## Windows setup
+
+The Windows release is meant to be the field PC's Chap Arena folder for good: `event.db`, the log and recordings live
+in it, and in-app updates replace the exe in place. Unzip it somewhere permanent, like `C:\chap-arena`, and run
+`Setup-ChapArena.cmd`. It asks before every change and is safe to run again:
+
+1. Moves an existing Chap Arena into the folder: copies its database and recordings, keeps its flags (minus `-db`)
+   and points its shortcuts at the new exe. The old folder is left alone.
+1. Installs the patched radio API on a Vivid-Hosting VH-113 access point over SSH, after saving the stock one in
+   `backup\`. The stock radio API reloads all of Wi-Fi for any change, which drops every robot; the patched one restarts
+   only the stations whose SSID or WPA key changed and falls back to a full reload when it can't. It needs root SSH on
+   the AP, and adds the PC's key there so the password is only typed once. The patch is
+   `radio-api/per-station-reload.patch`, applied to [frc-radio-api](https://github.com/patfair/frc-radio-api) at the
+   commit pinned in `release.yml`.
+1. Watches a field test: drive a robot at R1 while R3 changes team, and it reports whether R1 ever lost its radio
+   link.
+
+`Rollback-ChapArena.cmd` starts the old Chap Arena again and puts the AP's stock radio API back. Everything the wizard
+shows is saved in `logs\`.
+
 ## Stations page
 
 Red and blue stations are side by side. Typing a team number (digits only) fills in the password from the database if
@@ -33,8 +53,9 @@ that team has one; otherwise a blank password uses the default WPA key from sett
 six stations to the access point and saves any new passwords to the teams. In the background it reconfigures the switch,
 and the SCC ports if SCC management is on, for only the stations whose team changed, so driver stations at the other
 stations stay connected. The stock VH-113 firmware still restarts Wi-Fi on every station whenever it's configured, so
-robots at unchanged stations reconnect anyway. Edited stations turn amber until applied, and the undo button next to the
-warning puts everything back to what's applied.
+robots at unchanged stations reconnect anyway, unless its radio API is patched (see [Windows setup](#windows-setup)).
+Edited stations turn amber until applied, and the undo button next to the warning puts everything back to what's
+applied.
 Radio link and connection quality come from the access point. The AP and switch icons in the header show their status,
 with details on hover.
 

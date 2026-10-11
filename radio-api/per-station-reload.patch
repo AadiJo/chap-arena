@@ -1,0 +1,518 @@
+From 39397a8a82295154826e6a12afaa61c8ba513c90 Mon Sep 17 00:00:00 2001
+From: Advait Johari <zakethegr8@gmail.com>
+Date: Sun, 11 Oct 2026 00:04:15 -0500
+Subject: [PATCH] Restart only changed stations on the Vivid-Hosting AP
+
+A "wifi reload" on the VH-113's Qualcomm firmware deletes and recreates every interface on the radio,
+so configuring one station kicks every robot off. When the channel, bandwidth and VLANs are
+unchanged, restart hostapd on only the interfaces whose SSID or WPA key changes, through hostapd's
+global control socket the way QSDK's hostapd.sh does. Anything else, or a station that doesn't come
+back with its new SSID, falls back to reloading all of Wi-Fi as before.
+---
+ README.md                |   4 +
+ radio/fake_shell_test.go |   9 ++
+ radio/radio_ap.go        | 144 ++++++++++++++++++++++--
+ radio/radio_ap_test.go   | 236 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 383 insertions(+), 10 deletions(-)
+
+diff --git a/README.md b/README.md
+index 30e1ccf..02eb916 100644
+--- a/README.md
++++ b/README.md
+@@ -124,6 +124,10 @@ $ curl http://10.0.100.2:8081/configuration -XPOST -d '{
+ New configuration received and will be applied asynchronously.
+ ```
+ 
++On the Vivid-Hosting access point, a request that leaves the channel, bandwidth and VLANs alone only restarts the
++stations whose SSID or WPA key changes, so robots on the other stations stay connected. Anything else, or a station that
++doesn't come back with its new SSID, reloads all of Wi-Fi as before.
++
+ The `/status` endpoint can then be polled to check whether the configuration has been applied. For example:
+ ```
+ $ curl http://10.0.100.2:8081/status
+diff --git a/radio/fake_shell_test.go b/radio/fake_shell_test.go
+index cda8c1d..a6b79a4 100644
+--- a/radio/fake_shell_test.go
++++ b/radio/fake_shell_test.go
+@@ -21,6 +21,10 @@ type fakeShell struct {
+ 	// Map of commands to their error response, for tests to set. A given command should only appear once between
+ 	// commandOutput and commandErrors.
+ 	commandErrors map[string]error
++
++	// Map of commands to functions run after them, for tests to change what later commands return (e.g. what iwinfo
++	// reports once Wi-Fi has been reloaded).
++	afterCommand map[string]func()
+ }
+ 
+ func newFakeShell(t *testing.T) *fakeShell {
+@@ -29,12 +33,16 @@ func newFakeShell(t *testing.T) *fakeShell {
+ 		commandsRun:   make(map[string]struct{}),
+ 		commandOutput: make(map[string]string),
+ 		commandErrors: make(map[string]error),
++		afterCommand:  make(map[string]func()),
+ 	}
+ }
+ 
+ func (shell *fakeShell) runCommand(command string, args ...string) (string, error) {
+ 	fullCommand := strings.Join(append([]string{command}, args...), " ")
+ 	shell.commandsRun[fullCommand] = struct{}{}
++	if after, ok := shell.afterCommand[fullCommand]; ok {
++		defer after()
++	}
+ 	if output, ok := shell.commandOutput[fullCommand]; ok {
+ 		return output, nil
+ 	}
+@@ -63,4 +71,5 @@ func (shell *fakeShell) reset() {
+ 	shell.commandsRun = make(map[string]struct{})
+ 	shell.commandOutput = make(map[string]string)
+ 	shell.commandErrors = make(map[string]error)
++	shell.afterCommand = make(map[string]func())
+ }
+diff --git a/radio/radio_ap.go b/radio/radio_ap.go
+index 389b39a..afb64bc 100644
+--- a/radio/radio_ap.go
++++ b/radio/radio_ap.go
+@@ -7,6 +7,8 @@ import (
+ 	"fmt"
+ 	"github.com/digineo/go-uci"
+ 	"log"
++	"os"
++	"path/filepath"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -168,8 +170,13 @@ func (radio *Radio) setInitialState() {
+ 
+ // configure configures the radio with the given configuration.
+ func (radio *Radio) configure(request ConfigurationRequest) error {
++	// The channel and bandwidth apply to the whole radio, so changing either needs a full Wi-Fi reload.
++	radioChanged := false
+ 	if request.Channel > 0 {
+-		uciTree.SetType("wireless", radio.device, "channel", uci.TypeOption, strconv.Itoa(request.Channel))
++		channel := strconv.Itoa(request.Channel)
++		currentChannel, _ := uciTree.GetLast("wireless", radio.device, "channel")
++		radioChanged = currentChannel != channel
++		uciTree.SetType("wireless", radio.device, "channel", uci.TypeOption, channel)
+ 		radio.Channel = request.Channel
+ 	}
+ 	if request.ChannelBandwidth != "" {
+@@ -182,6 +189,8 @@ func (radio *Radio) configure(request ConfigurationRequest) error {
+ 		default:
+ 			return fmt.Errorf("invalid channel bandwidth: %s", request.ChannelBandwidth)
+ 		}
++		currentHtmode, _ := uciTree.GetLast("wireless", radio.device, "htmode")
++		radioChanged = radioChanged || currentHtmode != htmode
+ 		uciTree.SetType("wireless", radio.device, "htmode", uci.TypeOption, htmode)
+ 		radio.ChannelBandwidth = request.ChannelBandwidth
+ 	}
+@@ -207,24 +216,20 @@ func (radio *Radio) configure(request ConfigurationRequest) error {
+ 		}
+ 		time.Sleep(wifiReloadBackoffDuration)
+ 	}
++	if radio.Type == TypeVividHosting && !radioChanged && radio.configureChangedStations(request.StationConfigurations) {
++		return nil
++	}
+ 	return radio.configureStations(request.StationConfigurations)
+ }
+ 
+-// configureStations configures the access point with the given team station configurations.
++// configureStations configures the access point with the given team station configurations, reloading all of Wi-Fi.
+ func (radio *Radio) configureStations(stationConfigurations map[string]StationConfiguration) error {
+ 	retryCount := 1
+ 
+ 	for {
+ 		for station := red1; station <= blue3; station++ {
+ 			position := int(station) + 1
+-			var ssid, wpaKey string
+-			if config, ok := stationConfigurations[station.String()]; ok {
+-				ssid = config.Ssid
+-				wpaKey = config.WpaKey
+-			} else {
+-				ssid = fmt.Sprintf("no-team-%d", position)
+-				wpaKey = ssid
+-			}
++			ssid, wpaKey := stationSsidAndKey(stationConfigurations, station)
+ 
+ 			wifiInterface := fmt.Sprintf("@wifi-iface[%d]", position)
+ 			uciTree.SetType("wireless", wifiInterface, "ssid", uci.TypeOption, ssid)
+@@ -261,6 +266,125 @@ func (radio *Radio) configureStations(stationConfigurations map[string]StationCo
+ 	return nil
+ }
+ 
++// configureChangedStations applies the station configurations by restarting hostapd on only the interfaces whose SSID
++// or WPA key changes, so robots on the other stations stay connected. A "wifi reload" on the VH-113's Qualcomm firmware
++// deletes and recreates every interface on the radio, which kicks every robot off. Returns false if the configuration
++// still needs that full reload: a station's VLAN changes, a restart fails, or the SSIDs don't match afterward. Any
++// stations it already restarted are saved in uci, so configureStations picks up where it left off.
++func (radio *Radio) configureChangedStations(stationConfigurations map[string]StationConfiguration) bool {
++	var changed []station
++	for station := red1; station <= blue3; station++ {
++		section := fmt.Sprintf("@wifi-iface[%d]", int(station)+1)
++		network, _ := uciTree.GetLast("wireless", section, "network")
++		if network != fmt.Sprintf("vlan%d", radio.getStationVlan(station)) {
++			return false
++		}
++		ssid, wpaKey := stationSsidAndKey(stationConfigurations, station)
++		currentSsid, _ := uciTree.GetLast("wireless", section, "ssid")
++		currentWpaKey, _ := uciTree.GetLast("wireless", section, "key")
++		if currentSsid != ssid || currentWpaKey != wpaKey {
++			changed = append(changed, station)
++		}
++	}
++
++	for _, station := range changed {
++		ssid, wpaKey := stationSsidAndKey(stationConfigurations, station)
++		section := fmt.Sprintf("@wifi-iface[%d]", int(station)+1)
++		uciTree.SetType("wireless", section, "ssid", uci.TypeOption, ssid)
++		uciTree.SetType("wireless", section, "key", uci.TypeOption, wpaKey)
++		uciTree.SetType("wireless", section, "sae_password", uci.TypeOption, wpaKey)
++		if err := uciTree.Commit(); err != nil {
++			log.Printf("Failed to commit wireless configuration for %s: %v", station, err)
++			return false
++		}
++		if err := restartHostapd(radio.stationInterfaces[station], ssid, wpaKey); err != nil {
++			log.Printf("Couldn't restart %s on its own (%v); reloading all of Wi-Fi instead.", station, err)
++			return false
++		}
++	}
++	if len(changed) > 0 {
++		time.Sleep(wifiReloadBackoffDuration)
++	}
++
++	if err := radio.updateStationStatuses(); err != nil {
++		log.Printf("Error updating station statuses (%v); reloading all of Wi-Fi.", err)
++		return false
++	}
++	if !radio.stationSsidsAreCorrect(stationConfigurations) {
++		log.Printf("Wi-Fi configuration incorrect after restarting %v; reloading all of Wi-Fi.", changed)
++		return false
++	}
++	log.Printf("Configured Wi-Fi by restarting only %v.", changed)
++	return true
++}
++
++// stationSsidAndKey returns the SSID and WPA key the given station should have: its team's, or a placeholder that
++// leaves the station unused.
++func stationSsidAndKey(stationConfigurations map[string]StationConfiguration, station station) (string, string) {
++	if config, ok := stationConfigurations[station.String()]; ok {
++		return config.Ssid, config.WpaKey
++	}
++	placeholder := fmt.Sprintf("no-team-%d", int(station)+1)
++	return placeholder, placeholder
++}
++
++// Directory where QSDK's hostapd.sh writes each interface's config (hostapd-<interface>.conf), and the control socket
++// it adds and removes interfaces through. Each interface is its own hostapd entry, so one can be restarted alone.
++var hostapdConfigDir = "/var/run"
++
++const hostapdGlobalControl = "/var/run/hostapd/global"
++
++func hostapdConfigPath(wifiInterface string) string {
++	return filepath.Join(hostapdConfigDir, fmt.Sprintf("hostapd-%s.conf", wifiInterface))
++}
++
++// restartHostapd puts the new SSID and WPA key into the given interface's hostapd config, then removes the interface
++// from hostapd and adds it back the way QSDK's hostapd.sh does. The config file is checked before hostapd is touched.
++// Request validation keeps SSIDs and keys to plain alphanumerics, so they can go into the file as is.
++func restartHostapd(wifiInterface, ssid, wpaKey string) error {
++	path := hostapdConfigPath(wifiInterface)
++	config, err := os.ReadFile(path)
++	if err != nil {
++		return err
++	}
++	values := map[string]string{"ssid": ssid, "wpa_passphrase": wpaKey, "sae_password": wpaKey}
++	found := map[string]bool{}
++	lines := strings.Split(string(config), "\n")
++	for i, line := range lines {
++		name, _, ok := strings.Cut(line, "=")
++		if value, known := values[name]; ok && known {
++			lines[i] = name + "=" + value
++			found[name] = true
++		}
++	}
++	// sae_password is optional; hostapd.sh only writes it when SAE is on.
++	for _, name := range []string{"ssid", "wpa_passphrase"} {
++		if !found[name] {
++			return fmt.Errorf("no %s line in %s", name, path)
++		}
++	}
++	if err = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600); err != nil {
++		return err
++	}
++
++	if err = hostapdControl("REMOVE", wifiInterface); err != nil {
++		return err
++	}
++	return hostapdControl("ADD", fmt.Sprintf("bss_config=%s:%s", wifiInterface, path))
++}
++
++// hostapdControl sends a command to hostapd's global control socket and checks that hostapd answered OK.
++func hostapdControl(command string, argument string) error {
++	output, err := shell.runCommand("wpa_cli", "-g", hostapdGlobalControl, "raw", command, argument)
++	if err != nil {
++		return fmt.Errorf("hostapd %s %s: %v", command, argument, err)
++	}
++	if reply := strings.TrimSpace(output); reply != "OK" {
++		return fmt.Errorf("hostapd %s %s: %q", command, argument, reply)
++	}
++	return nil
++}
++
+ // updateStationStatuses fetches the current Wi-Fi status (SSID, WPA key, etc.) for each team station and updates the
+ // in-memory state.
+ func (radio *Radio) updateStationStatuses() error {
+diff --git a/radio/radio_ap_test.go b/radio/radio_ap_test.go
+index 81e525a..68033d5 100644
+--- a/radio/radio_ap_test.go
++++ b/radio/radio_ap_test.go
+@@ -5,7 +5,10 @@ package radio
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"github.com/stretchr/testify/assert"
++	"os"
++	"strings"
+ 	"testing"
+ 	"time"
+ )
+@@ -552,3 +555,236 @@ func TestRadio_updateMonitoring(t *testing.T) {
+ 	assert.Contains(t, fakeShell.commandsRun, "iwinfo wlan0-4 assoclist")
+ 	assert.Contains(t, fakeShell.commandsRun, "ifconfig wlan0-4")
+ }
++
++// A "wifi reload" on the VH-113's Qualcomm firmware deletes and recreates every interface on the radio, kicking every
++// robot off. These tests cover restarting only the stations whose SSID or WPA key changes, and every case that has to
++// fall back to the full reload: the channel, bandwidth or VLANs changing, a missing or unexpected hostapd config,
++// hostapd refusing to remove or re-add the interface, and the new SSID not taking.
++
++func TestRadio_configureVividHostingRestartsOnlyChangedStations(t *testing.T) {
++	radio, fakeTree, fakeShell := newRunningVividHosting(t)
++
++	// Red 3 gets a new team and blue 3 is emptied; red 1 keeps its team.
++	fakeShell.commandOutput[hostapdControlCommand("REMOVE ath12")] = "OK\n"
++	fakeShell.commandOutput[hostapdControlCommand("ADD bss_config=ath12:"+hostapdConfigPath("ath12"))] = "OK\n"
++	fakeShell.commandOutput[hostapdControlCommand("REMOVE ath15")] = "OK\n"
++	fakeShell.commandOutput[hostapdControlCommand("ADD bss_config=ath15:"+hostapdConfigPath("ath15"))] = "OK\n"
++	setIwinfoSsid(fakeShell, "ath12", "3456")
++	setIwinfoSsid(fakeShell, "ath15", "no-team-6")
++	request := ConfigurationRequest{
++		Channel: 5,
++		StationConfigurations: map[string]StationConfiguration{
++			"red1": {Ssid: "1111", WpaKey: "11111111"},
++			"red3": {Ssid: "3456", WpaKey: "34563456"},
++		},
++	}
++	assert.Nil(t, radio.handleConfigurationRequest(request))
++
++	// Only red 3 and blue 3 were restarted; the fake shell fails the test on any other command, like "wifi reload".
++	assert.Equal(t, 10, len(fakeShell.commandsRun))
++	assert.Equal(t, hostapdConfig("ath12", "vlan30", "3456", "34563456"), readHostapdConfig(t, "ath12"))
++	assert.Equal(t, hostapdConfig("ath15", "vlan60", "no-team-6", "no-team-6"), readHostapdConfig(t, "ath15"))
++	assert.Equal(t, hostapdConfig("ath1", "vlan10", "1111", "11111111"), readHostapdConfig(t, "ath1"))
++	assert.Equal(t, hostapdConfig("ath11", "vlan20", "no-team-2", "no-team-2"), readHostapdConfig(t, "ath11"))
++
++	// uci matches, so a later full reload or reboot comes up the same.
++	assert.Equal(t, "3456", fakeTree.valuesFromSet["wireless.@wifi-iface[3].ssid"])
++	assert.Equal(t, "34563456", fakeTree.valuesFromSet["wireless.@wifi-iface[3].key"])
++	assert.Equal(t, "34563456", fakeTree.valuesFromSet["wireless.@wifi-iface[3].sae_password"])
++	assert.Equal(t, "no-team-6", fakeTree.valuesFromSet["wireless.@wifi-iface[6].ssid"])
++	assert.NotContains(t, fakeTree.valuesFromSet, "wireless.@wifi-iface[1].ssid")
++	assert.Greater(t, fakeTree.commitCount, 0)
++
++	assert.Equal(t, "1111", radio.StationStatuses["red1"].Ssid)
++	assert.Equal(t, "3456", radio.StationStatuses["red3"].Ssid)
++	assert.Nil(t, radio.StationStatuses["blue3"])
++}
++
++func TestRadio_configureVividHostingWithNoChanges(t *testing.T) {
++	radio, _, fakeShell := newRunningVividHosting(t)
++
++	assert.Nil(t, radio.handleConfigurationRequest(ConfigurationRequest{Channel: 5, StationConfigurations: runningStations}))
++
++	// Nothing restarted; only the status check ran.
++	assert.Equal(t, 6, len(fakeShell.commandsRun))
++	for station := red1; station <= blue3; station++ {
++		assert.Contains(t, fakeShell.commandsRun, "iwinfo "+radio.stationInterfaces[station]+" info")
++	}
++	assert.Equal(t, hostapdConfig("ath12", "vlan30", "3333", "33333333"), readHostapdConfig(t, "ath12"))
++	assert.Equal(t, "6666", radio.StationStatuses["blue3"].Ssid)
++}
++
++func TestRadio_configureVividHostingFallsBackToFullReload(t *testing.T) {
++	remove := hostapdControlCommand("REMOVE ath12")
++	// A function since the config path depends on each subtest's temp directory.
++	add := func() string { return hostapdControlCommand("ADD bss_config=ath12:" + hostapdConfigPath("ath12")) }
++	red3Changed := map[string]StationConfiguration{
++		"red1":  {Ssid: "1111", WpaKey: "11111111"},
++		"red3":  {Ssid: "3456", WpaKey: "34563456"},
++		"blue3": {Ssid: "6666", WpaKey: "66666666"},
++	}
++	testCases := []struct {
++		name string
++		// Changes to the running radio and request before configuring; the request starts as red3Changed on channel 5.
++		setUp func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest)
++		// Whether red 3's hostapd config should be left as setUp leaves it, because the fallback came before rewriting it.
++		configUntouched bool
++	}{
++		{
++			name: "channel changes",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				request.Channel = 37
++			},
++			configUntouched: true,
++		},
++		{
++			name: "bandwidth changes",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				request.ChannelBandwidth = "20MHz"
++			},
++			configUntouched: true,
++		},
++		{
++			name: "VLANs change",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				request.RedVlans = Vlans708090
++				request.BlueVlans = Vlans102030
++			},
++			configUntouched: true,
++		},
++		{
++			name: "hostapd config is missing",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				assert.Nil(t, os.Remove(hostapdConfigPath("ath12")))
++			},
++			configUntouched: true,
++		},
++		{
++			name: "hostapd config has no passphrase",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				config := strings.Replace(readHostapdConfig(t, "ath12"), "wpa_passphrase=33333333\n", "", 1)
++				assert.Nil(t, os.WriteFile(hostapdConfigPath("ath12"), []byte(config), 0644))
++			},
++			configUntouched: true,
++		},
++		{
++			name: "hostapd can't be reached",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				fakeShell.commandErrors[remove] = errors.New("no socket")
++			},
++		},
++		{
++			name: "hostapd refuses to remove the interface",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				fakeShell.commandOutput[remove] = "FAIL\n"
++			},
++		},
++		{
++			name: "hostapd refuses to add the interface back",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				fakeShell.commandOutput[remove] = "OK\n"
++				fakeShell.commandOutput[add()] = "FAIL\n"
++			},
++		},
++		{
++			name: "new SSID doesn't take",
++			setUp: func(t *testing.T, fakeShell *fakeShell, request *ConfigurationRequest) {
++				fakeShell.commandOutput[remove] = "OK\n"
++				fakeShell.commandOutput[add()] = "OK\n"
++				setIwinfoSsid(fakeShell, "ath12", "3333")
++				fakeShell.afterCommand["wifi reload wifi1"] = func() { setIwinfoSsid(fakeShell, "ath12", "3456") }
++			},
++		},
++	}
++	for _, testCase := range testCases {
++		t.Run(testCase.name, func(t *testing.T) {
++			radio, fakeTree, fakeShell := newRunningVividHosting(t)
++			fakeShell.commandOutput["wifi reload wifi1"] = ""
++			setIwinfoSsid(fakeShell, "ath12", "3456")
++			request := ConfigurationRequest{Channel: 5, StationConfigurations: red3Changed}
++			testCase.setUp(t, fakeShell, &request)
++			configBefore, _ := os.ReadFile(hostapdConfigPath("ath12"))
++
++			assert.Nil(t, radio.handleConfigurationRequest(request))
++			assert.Contains(t, fakeShell.commandsRun, "wifi reload wifi1")
++			assert.Equal(t, "3456", fakeTree.valuesFromSet["wireless.@wifi-iface[3].ssid"])
++			assert.Equal(t, "1111", fakeTree.valuesFromSet["wireless.@wifi-iface[1].ssid"])
++			assert.Equal(t, "3456", radio.StationStatuses["red3"].Ssid)
++			if testCase.configUntouched {
++				configAfter, _ := os.ReadFile(hostapdConfigPath("ath12"))
++				assert.Equal(t, string(configBefore), string(configAfter))
++			}
++		})
++	}
++}
++
++// What newRunningVividHosting starts each station with.
++var runningStations = map[string]StationConfiguration{
++	"red1":  {Ssid: "1111", WpaKey: "11111111"},
++	"red3":  {Ssid: "3333", WpaKey: "33333333"},
++	"blue3": {Ssid: "6666", WpaKey: "66666666"},
++}
++
++// Sets up a VH-113 already running runningStations on channel 5 at 40MHz: uci and each interface's hostapd config (in a
++// temp directory standing in for /var/run) describe them, and iwinfo reports their SSIDs. Puts the package's fakes and
++// settings back afterward.
++func newRunningVividHosting(t *testing.T) (*Radio, *fakeUciTree, *fakeShell) {
++	oldUciTree, oldShell, oldHostapdConfigDir := uciTree, shell, hostapdConfigDir
++	oldRetryBackoff, oldReloadBackoff := retryBackoffDuration, wifiReloadBackoffDuration
++	t.Cleanup(func() {
++		uciTree, shell, hostapdConfigDir = oldUciTree, oldShell, oldHostapdConfigDir
++		retryBackoffDuration, wifiReloadBackoffDuration = oldRetryBackoff, oldReloadBackoff
++	})
++
++	fakeTree := newFakeUciTree()
++	uciTree = fakeTree
++	fakeTree.valuesForGet["system.@system[0].model"] = "VH-113"
++	fakeShell := newFakeShell(t)
++	shell = fakeShell
++	fakeShell.commandOutput["cat /etc/vh_firmware"] = ""
++	hostapdConfigDir = t.TempDir()
++	retryBackoffDuration = 10 * time.Millisecond
++	wifiReloadBackoffDuration = 10 * time.Millisecond
++	radio := NewRadio()
++	delete(fakeShell.commandsRun, "cat /etc/vh_firmware")
++
++	fakeTree.valuesForGet["wireless.wifi1.channel"] = "5"
++	fakeTree.valuesForGet["wireless.wifi1.htmode"] = "HT40"
++	for station := red1; station <= blue3; station++ {
++		wifiInterface := radio.stationInterfaces[station]
++		ssid, wpaKey := stationSsidAndKey(runningStations, station)
++		vlan := fmt.Sprintf("vlan%d", radio.getStationVlan(station))
++		section := fmt.Sprintf("wireless.@wifi-iface[%d]", int(station)+1)
++		fakeTree.valuesForGet[section+".ssid"] = ssid
++		fakeTree.valuesForGet[section+".key"] = wpaKey
++		fakeTree.valuesForGet[section+".network"] = vlan
++		config := hostapdConfig(wifiInterface, vlan, ssid, wpaKey)
++		assert.Nil(t, os.WriteFile(hostapdConfigPath(wifiInterface), []byte(config), 0644))
++		setIwinfoSsid(fakeShell, wifiInterface, ssid)
++	}
++	return radio, fakeTree, fakeShell
++}
++
++// An abbreviated hostapd config the way QSDK's hostapd.sh writes one for an AP interface. ignore_broadcast_ssid is there
++// to catch a rewrite that matches "ssid=" anywhere in a line.
++func hostapdConfig(wifiInterface, vlan, ssid, wpaKey string) string {
++	return fmt.Sprintf(
++		"driver=nl80211\ninterface=%s\nctrl_interface=/var/run/hostapd-wifi1\nssid=%s\nbridge=br-%s\nwpa=2\n"+
++			"wpa_passphrase=%s\nwpa_key_mgmt=WPA-PSK SAE\nsae_password=%s\nignore_broadcast_ssid=0\n",
++		wifiInterface, ssid, vlan, wpaKey, wpaKey,
++	)
++}
++
++func readHostapdConfig(t *testing.T, wifiInterface string) string {
++	config, err := os.ReadFile(hostapdConfigPath(wifiInterface))
++	assert.Nil(t, err)
++	return string(config)
++}
++
++func hostapdControlCommand(command string) string {
++	return "wpa_cli -g /var/run/hostapd/global raw " + command
++}
++
++func setIwinfoSsid(fakeShell *fakeShell, wifiInterface, ssid string) {
++	fakeShell.commandOutput["iwinfo "+wifiInterface+" info"] = fmt.Sprintf("%s\nESSID: \"%s\"\n", wifiInterface, ssid)
++}
+-- 
+2.43.0
+

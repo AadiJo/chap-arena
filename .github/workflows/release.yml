@@ -13,7 +13,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below. Unzip it and run the binary; it opens the web UI in your browser. The web UI is built into the binary, so it can be run from anywhere."
+        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below. Unzip it and run the binary; it opens the web UI in your browser. The web UI is built into the binary, so it can be run from anywhere. On Windows, unzip it where Chap Arena should live and run Setup-ChapArena.cmd: it moves an existing Chap Arena into that folder and patches a Vivid-Hosting access point so applying one station leaves the others connected."
 
   bundle:
     needs: create
@@ -40,7 +40,23 @@ jobs:
           # The version lets the app offer newer releases; see the update package.
           go build -ldflags "-X main.version=${GITHUB_REF_NAME}" -o "chap-arena/chap-arena${{ matrix.ext }}"
           cp LICENSE README.md switch_config.txt chap-arena/
-          zip -r -X "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" chap-arena
+
+      # The Windows bundle is meant to become the field PC's Chap Arena folder, so it also carries the setup wizard and
+      # the patched radio API it installs on the access point. That's frc-radio-api at a pinned upstream commit plus
+      # radio-api/per-station-reload.patch, tested before it's built for the AP's ARM CPU.
+      - name: Add the setup wizard and patched radio API
+        if: matrix.goos == 'windows'
+        env:
+          FRC_RADIO_API_COMMIT: 33d3cdc62661d4c15d445784cbcf3649ceae9eba
+        run: |
+          git clone --quiet https://github.com/patfair/frc-radio-api.git radio-api-src
+          git -C radio-api-src checkout --quiet "$FRC_RADIO_API_COMMIT"
+          git -C radio-api-src apply "$PWD/radio-api/per-station-reload.patch"
+          (cd radio-api-src && go test ./... && GOOS=linux GOARCH=arm go build -o ../chap-arena/frc-radio-api .)
+          cp setup/Setup-ChapArena.cmd setup/Rollback-ChapArena.cmd setup/Setup-ChapArena.ps1 chap-arena/
+
+      - name: Zip bundle
+        run: zip -r -X "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" chap-arena
 
       - name: Upload bundle
         env:
