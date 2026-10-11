@@ -103,6 +103,10 @@ port 80 (change it with `-recordings-port`), so teams can't reach the admin UI, 
 keys and passwords. The log shows the page's address at startup, or why it couldn't start (on Linux, port 80 needs
 root).
 
+A driver station can stay on Wi-Fi at the same time. Each team's DHCP pool gives it a route to the FMS subnet
+(`10.0.100.0/24`) through the field switch, so FMS traffic goes over Ethernet and everything else over Wi-Fi. It picks
+the route up when it gets its address, so unplug and replug the Ethernet after applying stations with an older version.
+
 A team's network only reaches the FMS while that team is assigned to a station, so teams should download their logs
 before the next match's stations are applied. A computer on the admin network (`10.0.100.x`) can reach the page at any
 time. On Windows, allow the firewall prompt the first time the app starts.

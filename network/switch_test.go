@@ -45,7 +45,8 @@ func TestConfigureSwitch(t *testing.T) {
 		t,
 		"password\nenable\npassword\nterminal length 0\nconfig terminal\n"+
 			"ip dhcp excluded-address 10.2.54.1 10.2.54.19\nip dhcp excluded-address 10.2.54.200 10.2.54.254\nip dhcp pool dhcp50\n"+
-			"network 10.2.54.0 255.255.255.0\ndefault-router 10.2.54.4\nlease 7\n"+
+			"network 10.2.54.0 255.255.255.0\ndefault-router 10.2.54.4\n"+
+			"option 121 hex 180a.0064.0a02.3604\noption 249 hex 180a.0064.0a02.3604\nlease 7\n"+
 			"interface Vlan50\nip address 10.2.54.4 255.255.255.0\n"+
 			"end\nexit\n",
 		command2,
@@ -63,22 +64,28 @@ func TestConfigureSwitch(t *testing.T) {
 		t,
 		"password\nenable\npassword\nterminal length 0\nconfig terminal\n"+
 			"ip dhcp excluded-address 10.11.14.1 10.11.14.19\nip dhcp excluded-address 10.11.14.200 10.11.14.254\nip dhcp pool dhcp10\n"+
-			"network 10.11.14.0 255.255.255.0\ndefault-router 10.11.14.4\nlease 7\n"+
+			"network 10.11.14.0 255.255.255.0\ndefault-router 10.11.14.4\n"+
+			"option 121 hex 180a.0064.0a0b.0e04\noption 249 hex 180a.0064.0a0b.0e04\nlease 7\n"+
 			"interface Vlan10\nip address 10.11.14.4 255.255.255.0\n"+
 			"ip dhcp excluded-address 10.2.54.1 10.2.54.19\nip dhcp excluded-address 10.2.54.200 10.2.54.254\nip dhcp pool dhcp20\n"+
-			"network 10.2.54.0 255.255.255.0\ndefault-router 10.2.54.4\nlease 7\n"+
+			"network 10.2.54.0 255.255.255.0\ndefault-router 10.2.54.4\n"+
+			"option 121 hex 180a.0064.0a02.3604\noption 249 hex 180a.0064.0a02.3604\nlease 7\n"+
 			"interface Vlan20\nip address 10.2.54.4 255.255.255.0\n"+
 			"ip dhcp excluded-address 10.2.96.1 10.2.96.19\nip dhcp excluded-address 10.2.96.200 10.2.96.254\nip dhcp pool dhcp30\n"+
-			"network 10.2.96.0 255.255.255.0\ndefault-router 10.2.96.4\nlease 7\n"+
+			"network 10.2.96.0 255.255.255.0\ndefault-router 10.2.96.4\n"+
+			"option 121 hex 180a.0064.0a02.6004\noption 249 hex 180a.0064.0a02.6004\nlease 7\n"+
 			"interface Vlan30\nip address 10.2.96.4 255.255.255.0\n"+
 			"ip dhcp excluded-address 10.15.3.1 10.15.3.19\nip dhcp excluded-address 10.15.3.200 10.15.3.254\nip dhcp pool dhcp40\n"+
-			"network 10.15.3.0 255.255.255.0\ndefault-router 10.15.3.4\nlease 7\n"+
+			"network 10.15.3.0 255.255.255.0\ndefault-router 10.15.3.4\n"+
+			"option 121 hex 180a.0064.0a0f.0304\noption 249 hex 180a.0064.0a0f.0304\nlease 7\n"+
 			"interface Vlan40\nip address 10.15.3.4 255.255.255.0\n"+
 			"ip dhcp excluded-address 10.16.78.1 10.16.78.19\nip dhcp excluded-address 10.16.78.200 10.16.78.254\nip dhcp pool dhcp50\n"+
-			"network 10.16.78.0 255.255.255.0\ndefault-router 10.16.78.4\nlease 7\n"+
+			"network 10.16.78.0 255.255.255.0\ndefault-router 10.16.78.4\n"+
+			"option 121 hex 180a.0064.0a10.4e04\noption 249 hex 180a.0064.0a10.4e04\nlease 7\n"+
 			"interface Vlan50\nip address 10.16.78.4 255.255.255.0\n"+
 			"ip dhcp excluded-address 10.15.38.1 10.15.38.19\nip dhcp excluded-address 10.15.38.200 10.15.38.254\nip dhcp pool dhcp60\n"+
-			"network 10.15.38.0 255.255.255.0\ndefault-router 10.15.38.4\nlease 7\n"+
+			"network 10.15.38.0 255.255.255.0\ndefault-router 10.15.38.4\n"+
+			"option 121 hex 180a.0064.0a0f.2604\noption 249 hex 180a.0064.0a0f.2604\nlease 7\n"+
 			"interface Vlan60\nip address 10.15.38.4 255.255.255.0\n"+
 			"end\nexit\n",
 		command2,

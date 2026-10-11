@@ -75,19 +75,25 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 	}
 	time.Sleep(sw.configPauseDuration)
 
-	// Create the new team VLANs.
+	// Create the new team VLANs. Each pool also hands out a route to the FMS subnet (10.0.100.0/24) through the team's
+	// gateway, as DHCP options 121 and 249 (Microsoft's older code for the same thing). A driver station also on Wi-Fi
+	// would otherwise send FMS traffic out its Wi-Fi default route; the more specific route wins over any default.
+	// The value is the prefix length (0x18 = 24), the prefix's significant octets (10.0.100) and then the gateway.
 	addTeamVlansCommand := ""
 	addTeamVlan := func(team *model.Team, vlan int) {
 		if team == nil {
 			return
 		}
 		teamPartialIp := fmt.Sprintf("%d.%d", team.Id/100, team.Id%100)
+		fmsRoute := fmt.Sprintf("180a.0064.0a%02x.%02x%02x", team.Id/100, team.Id%100, switchTeamGatewayAddress)
 		addTeamVlansCommand += fmt.Sprintf(
 			"ip dhcp excluded-address 10.%s.1 10.%s.19\n"+
 				"ip dhcp excluded-address 10.%s.200 10.%s.254\n"+
 				"ip dhcp pool dhcp%d\n"+
 				"network 10.%s.0 255.255.255.0\n"+
 				"default-router 10.%s.%d\n"+
+				"option 121 hex %s\n"+
+				"option 249 hex %s\n"+
 				"lease 7\n"+
 				"interface Vlan%d\nip address 10.%s.%d 255.255.255.0\n",
 			teamPartialIp,
@@ -98,6 +104,8 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 			teamPartialIp,
 			teamPartialIp,
 			switchTeamGatewayAddress,
+			fmsRoute,
+			fmsRoute,
 			vlan,
 			teamPartialIp,
 			switchTeamGatewayAddress,
