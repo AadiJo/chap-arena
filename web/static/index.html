@@ -2,10 +2,10 @@
 <!--
 The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars, driver station
 state when FMS is on), what's recorded from each team's robot as a tree of its NetworkTables topics, the FMS mode
-control and Record button in the header, and settings for the network and recording format (grouped lists, sticky save
-bar). Dark only. Logic lives in /app.js (see its header for the markup contract), /topics.js and /topic-tree.js, which
-the team page shares, along with the tree's styles in /topic-tree.css; /demo.js fakes the API when the URL has ?demo,
-for previewing without field hardware.
+control (hidden) and Record button in the header, and settings for the network and recording format (grouped lists,
+sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract), /topics.js and
+/topic-tree.js, which the team page shares, along with the tree's styles in /topic-tree.css; /demo.js fakes the API
+when the URL has ?demo, for previewing without field hardware.
 -->
 <html lang="en">
 <head>
@@ -237,7 +237,8 @@ for previewing without field hardware.
       <button type="button" class="rec-btn" id="record"><i></i><span id="record-label">Record</span></button>
       <span class="rec-meta" id="record-meta"></span>
     </div>
-    <div class="seg" role="group" aria-label="FMS">
+    <!-- FMS mode control, hidden for now. Remove `hidden` to bring it back; app.js still wires it up. -->
+    <div class="seg" role="group" aria-label="FMS" hidden>
       <button type="button" data-ds-mode="off" title="Driver stations stay in local mode; teams enable their own robots">Off</button>
       <button type="button" data-ds-mode="disabled" title="FMS controls driver stations; every robot disabled (Space)">Disabled</button>
       <button type="button" data-ds-mode="enabled" title="Enable every connected robot. Press again to enable ones that connected since.">Enabled</button>
