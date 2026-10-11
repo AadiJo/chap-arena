@@ -4,7 +4,7 @@
 // publishes later. A "!" in front excludes instead, so a saved section can leave out a topic or a smaller section. The
 // most specific entry decides: one naming the path itself, else the longest section above it.
 //
-// Loaded before demo.js and app.js, which share these functions.
+// Loaded first on the admin page and the team page; demo.js, topic-tree.js and app.js use these functions.
 
 "use strict";
 

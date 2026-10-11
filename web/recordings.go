@@ -1,119 +1,120 @@
-// Read-only page for driver stations to browse and download recordings. It runs on its own port, apart from the admin
-// UI, so the field switch can let team networks reach it without exposing FMS control, WPA keys or passwords. The markup
-// and styles are in recordings.html, embedded in the binary.
+// The recordings folder as the team page's Downloads tab sees it: a JSON listing of every session and its files, with
+// the station each file's team was on then, and the files themselves for download. Part of the team page's server (see
+// team.go).
 
 package web
 
 import (
 	"cmp"
-	_ "embed"
+	"encoding/json"
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
-	"html/template"
 	"io/fs"
-	"log"
+	"math"
 	"net/http"
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
 
-//go:embed recordings.html
-var recordingsPageHtml string
-
-var recordingsPage = template.Must(template.New("recordings").Parse(recordingsPageHtml))
-
-// What recordings.html renders for one folder: the session folders in it and the files in it. In practice the
-// recordings folder holds only sessions and a session holds only team files.
+// Every session in the recordings folder, newest first. In practice the folder holds only sessions and a session holds
+// only team files.
 type recordingsListing struct {
-	Session  *recordingSession // The open session, or nil for the recordings folder itself.
-	Sessions []recordingSession
-	Files    []recordingFile
+	Sessions []recordingSession `json:"sessions"`
 }
 
 type recordingSession struct {
-	Name  string // Folder name and link, e.g. 2026-10-10_143205.
-	Label string // When it started, e.g. "Today, 2:32 PM", or Name if it isn't a recorder's timestamp.
+	Name  string          `json:"name"`  // Folder name, e.g. 2026-10-10_143205. Files are at /recordings/<name>/<file>.
+	Label string          `json:"label"` // When it started, e.g. "Today, 2:32 PM", or Name if it isn't a recorder's timestamp.
+	Files []recordingFile `json:"files"` // In team number order.
 }
 
 type recordingFile struct {
-	Name, Stem, Ext string // 254.wpilog, 254, .wpilog
-	Size            string // 3.4 MB
+	Name    string `json:"name"`    // 254.wpilog
+	TeamId  int    `json:"teamId"`  // 254, from the name; 0 if the name isn't a team number.
+	Station string `json:"station"` // The station the team was on when the file started, e.g. B1; "" if not noted.
+	Size    string `json:"size"`    // 3.4 MB
 }
 
-// Serves recordingsDir as styled folder listings, one folder per session. Files download rather than open in the
-// browser. Only GET and HEAD are allowed; nothing else in the app is reachable through this handler.
-func NewRecordingsHandler(recordingsDir string) http.Handler {
+// Lists every session in recordingsDir with its files.
+func listRecordings(recordingsDir string) (recordingsListing, error) {
+	recordings := os.DirFS(recordingsDir)
+	entries, err := fs.ReadDir(recordings, ".")
+	if err != nil {
+		return recordingsListing{}, err
+	}
+	now := time.Now()
+	listing := recordingsListing{Sessions: []recordingSession{}}
+	// ReadDir sorts by name, which for timestamped folders is oldest first.
+	for _, entry := range slices.Backward(entries) {
+		if !entry.IsDir() {
+			continue
+		}
+		session := recordingSession{Name: entry.Name(), Label: sessionLabel(entry.Name(), now), Files: []recordingFile{}}
+		files, err := fs.ReadDir(recordings, entry.Name())
+		if err != nil {
+			return recordingsListing{}, err
+		}
+		stations := sessionStations(recordings, entry.Name())
+		for _, file := range files {
+			info, err := file.Info()
+			if err != nil || !info.Mode().IsRegular() || file.Name() == field.RecordingStationsFile {
+				continue
+			}
+			teamId, _ := strconv.Atoi(strings.TrimSuffix(file.Name(), path.Ext(file.Name())))
+			session.Files = append(
+				session.Files, recordingFile{
+					Name: file.Name(), TeamId: teamId, Station: stations[strconv.Itoa(teamId)], Size: formatSize(info.Size()),
+				},
+			)
+		}
+		// By team number, so 254 comes ahead of 1114; files that aren't a team's go last, by name.
+		order := func(file recordingFile) int {
+			if file.TeamId == 0 {
+				return math.MaxInt
+			}
+			return file.TeamId
+		}
+		slices.SortFunc(
+			session.Files, func(a, b recordingFile) int {
+				return cmp.Or(cmp.Compare(order(a), order(b)), strings.Compare(a.Name, b.Name))
+			},
+		)
+		listing.Sessions = append(listing.Sessions, session)
+	}
+	return listing, nil
+}
+
+// The stations a session's teams were on, by team number, from its stations.json (see field.RecordingStationsFile).
+// Empty for a session recorded before the recorder noted them, or one whose file can't be read.
+func sessionStations(recordings fs.FS, session string) map[string]string {
+	stations := map[string]string{}
+	if data, err := fs.ReadFile(recordings, path.Join(session, field.RecordingStationsFile)); err == nil {
+		_ = json.Unmarshal(data, &stations)
+	}
+	return stations
+}
+
+// Serves the files in recordingsDir as downloads rather than opening them in the browser. Folders aren't listed; the
+// Downloads tab lists them instead.
+func newRecordingFiles(recordingsDir string) http.Handler {
 	recordings := os.DirFS(recordingsDir)
 	files := http.FileServerFS(recordings)
-	mux := http.NewServeMux()
-	mux.HandleFunc(
-		"GET /", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Cache-Control", "no-store")
-			name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
-			if name == "" {
-				name = "."
-			}
-			info, err := fs.Stat(recordings, name)
-			// The file server still handles a folder without its trailing slash, by redirecting to add it, so relative
-			// links on the page resolve inside the folder.
-			if err == nil && info.IsDir() && strings.HasSuffix(r.URL.Path, "/") {
-				writeRecordingsListing(w, recordings, name)
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			info, err := fs.Stat(recordings, strings.TrimPrefix(path.Clean(r.URL.Path), "/"))
+			if err != nil || !info.Mode().IsRegular() {
+				http.NotFound(w, r)
 				return
 			}
-			if err == nil && info.Mode().IsRegular() {
-				w.Header().Set("Content-Disposition", "attachment")
-			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Disposition", "attachment")
 			files.ServeHTTP(w, r)
 		},
 	)
-	return mux
-}
-
-// Renders the folder at name: newest session first, and files in team number order.
-func writeRecordingsListing(w http.ResponseWriter, recordings fs.FS, name string) {
-	entries, err := fs.ReadDir(recordings, name)
-	if err != nil {
-		http.Error(w, "Couldn't read the recordings folder", http.StatusInternalServerError)
-		return
-	}
-	now := time.Now()
-	var listing recordingsListing
-	if name != "." {
-		listing.Session = &recordingSession{Name: path.Base(name), Label: sessionLabel(path.Base(name), now)}
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			listing.Sessions = append(
-				listing.Sessions, recordingSession{Name: entry.Name(), Label: sessionLabel(entry.Name(), now)},
-			)
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		ext := path.Ext(entry.Name())
-		listing.Files = append(
-			listing.Files, recordingFile{
-				Name: entry.Name(), Stem: strings.TrimSuffix(entry.Name(), ext), Ext: ext, Size: formatSize(info.Size()),
-			},
-		)
-	}
-	// ReadDir sorts by name, which for timestamped folders is oldest first.
-	slices.Reverse(listing.Sessions)
-	// Stems are team numbers, so shorter first puts 254 ahead of 1114.
-	slices.SortFunc(
-		listing.Files, func(a, b recordingFile) int {
-			return cmp.Or(cmp.Compare(len(a.Stem), len(b.Stem)), strings.Compare(a.Name, b.Name))
-		},
-	)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := recordingsPage.Execute(w, listing); err != nil {
-		log.Printf("Recordings page: %v", err)
-	}
 }
 
 // Labels a session folder by when it started ("Today, 2:32 PM", "Yesterday, 4:30 PM" or "Oct 8, 4:30 PM"), read from

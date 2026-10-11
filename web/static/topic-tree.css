@@ -1,0 +1,61 @@
+/* The topic tree's styles, shared by the admin page (index.html) and the team page (team/index.html); topic-tree.js
+   has its markup contract. Uses the page's palette variables (--bg, --panel, --fg, --fg2, --fg3, --line, --line2,
+   --fill, --ok, --bad, --warn and --mono). */
+/* Topic tree, like AdvantageScope's sidebar: search above it, sections that open and close, and All / Recording to
+   pick what it lists. */
+.topic-tools { display: flex; gap: 10px; align-items: center; margin: 20px 0 10px; }
+.topic-search { flex: 1; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 5px 0 10px; background: var(--fill); border: 1px solid transparent; border-radius: 8px; color: var(--fg3); }
+.topic-search:focus-within { background: var(--bg); border-color: var(--line2); }
+.topic-search > svg { width: 15px; height: 15px; flex: none; }
+.topic-search input, .topic-search input:focus { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; padding: 0; font: 12.5px var(--mono); }
+.topic-search kbd { font: 11px var(--mono); color: var(--fg3); border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; margin-right: 4px; }
+.topic-search:focus-within kbd, .topic-search:has(button:not([hidden])) kbd { display: none; }
+.topic-search button { width: 24px; height: 24px; padding: 0; background: transparent; color: var(--fg3); display: grid; place-items: center; border-radius: 6px; }
+.topic-search button:hover { background: var(--line); color: var(--fg); }
+.topic-search button svg { width: 14px; height: 14px; }
+.topic-show { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; background: var(--line); padding: 3px; border-radius: 8px; }
+.topic-show button { height: 26px; padding: 0 12px; font-size: 12px; color: var(--fg2); background: transparent; border-radius: 6px; white-space: nowrap; }
+.topic-show button[aria-pressed=true] { background: var(--panel); color: var(--fg); }
+/* The plus records every match, lined up with the tree's plus column. */
+#topic-hits { display: flex; align-items: center; min-height: 26px; margin: 0 2px 10px; font-size: 12px; color: var(--fg2); }
+#topic-hits button { margin: 0 37px 0 auto; }
+#topic-tree { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+/* An empty tree shows its data-empty text (set by topic-tree.js). */
+#topic-tree:empty::after { content: attr(data-empty); display: block; padding: 11px 12px; font-size: 12px; color: var(--fg3); }
+/* Tree rows (data-kind is set by topic-tree.js). A section's count, and a typed path's description, span the topic columns. */
+.trow { display: grid; grid-template-columns: minmax(0, 1fr) 150px 48px 140px 54px; align-items: center; gap: 12px; min-height: 32px; padding: 0 8px 0 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.trow:first-child { border-top: 0; }
+.trow:hover { background: color-mix(in srgb, var(--fill) 70%, transparent); }
+#topic-tree:not([data-searching]) .trow[data-kind=section] { cursor: pointer; }
+.trow:not([data-kind=topic]) [data-field=count] { grid-column: 2 / 5; }
+.trow[data-kind=topic] [data-field=count], .trow:not([data-kind=topic]) :is([data-field=type], [data-field=hz], [data-field=last]) { display: none; }
+.trow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .nm { display: flex; align-items: center; gap: 6px; padding-left: calc(var(--depth, 0) * 18px); }
+.trow .tri { width: 12px; height: 12px; flex: none; fill: var(--fg3); transition: transform .12s; }
+.trow[aria-expanded=true] .tri { transform: rotate(90deg); }
+.trow:not([data-kind=section]) .tri { visibility: hidden; }
+.trow [data-field=name] { overflow: hidden; text-overflow: ellipsis; color: var(--fg2); }
+.trow[data-recorded] [data-field=name], .trow[data-kind=section] [data-field=name] { color: var(--fg); }
+.trow[data-kind=section] [data-field=name] { font-weight: 600; }
+.trow [data-field=name], .trow [data-field=type], .trow [data-field=last] { font-family: var(--mono); }
+.trow [data-field=type], .trow [data-field=count] { color: var(--fg3); }
+.trow[data-recorded] [data-field=type], .trow[data-kind=path] [data-field=count] { color: var(--fg2); }
+.trow [data-field=hz] { text-align: right; }
+.trow [data-field=last] { color: var(--fg2); }
+.trow[data-kind=path] { background: color-mix(in srgb, var(--ok) 5%, transparent); }
+/* A green plus records and a red minus stops. Each keeps its own column, so they line up down the tree. */
+.trow .act { grid-column: -2; display: grid; grid-template-columns: 24px 24px; gap: 6px; justify-content: end; }
+.act button, #topic-hits button { width: 24px; height: 24px; padding: 0; border-radius: 6px; display: grid; place-items: center; background: transparent; }
+.act .add, #topic-hits .add { grid-column: 1; color: var(--ok); }
+.act .remove { grid-column: 2; color: var(--bad); }
+.act .add:hover, #topic-hits .add:hover { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.act .remove:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.act svg, #topic-hits svg { stroke-width: 2.4; }
+mark { background: color-mix(in srgb, var(--warn) 30%, transparent); color: inherit; border-radius: 3px; }
+#topic-note { font-size: 12px; color: var(--fg3); margin: 10px 2px 0; }
+
+@media (max-width: 900px) {
+  .trow { grid-template-columns: minmax(0, 1fr) auto 54px; }
+  .trow :is([data-field=type], [data-field=hz], [data-field=last]) { display: none; }
+  .trow:not([data-kind=topic]) [data-field=count] { grid-column: auto; }
+}

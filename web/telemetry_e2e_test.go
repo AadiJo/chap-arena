@@ -21,6 +21,8 @@
 // 15. An excluded topic or section under a saved section is recorded anyway, or a topic saved by name inside an excluded
 //     section is dropped.
 // 16. A section puts types a CSV can't hold into one as raw bytes (a topic saved by name still keeps them).
+// 17. A session doesn't note the station each team was on when its file started (stations.json), so the team page can't
+//     color the team's own file by the alliance it played on, or a team moving mid-session rewrites it.
 
 package web
 
@@ -397,6 +399,15 @@ func float64At(payload []byte, i int) float64 {
 	return math.Float64frombits(binary.LittleEndian.Uint64(payload[8*i:]))
 }
 
+// Reads the stations a recording session noted for its teams, by team number.
+func readStationsFile(t *testing.T, sessionDir string) map[string]string {
+	data, err := os.ReadFile(filepath.Join(sessionDir, field.RecordingStationsFile))
+	require.Nil(t, err)
+	var stations map[string]string
+	require.Nil(t, json.Unmarshal(data, &stations), string(data))
+	return stations
+}
+
 // Lists a recording session's files, relative to it.
 func sessionFiles(t *testing.T, sessionDir string) []string {
 	var files []string
@@ -649,8 +660,9 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	assert.Equal(t, false, body["recording"].(map[string]any)["active"])
 	recordEnd := time.Now()
 
-	// One WPILOG per team.
-	assert.Equal(t, []string{"1114.wpilog", "254.wpilog"}, sessionFiles(t, sessionDir))
+	// One WPILOG per team, and (17) the station each was on.
+	assert.Equal(t, []string{"1114.wpilog", "254.wpilog", "stations.json"}, sessionFiles(t, sessionDir))
+	assert.Equal(t, map[string]string{"1114": "B2", "254": "R1"}, readStationsFile(t, sessionDir))
 	values := readWpilog(t, filepath.Join(sessionDir, "254.wpilog"))
 
 	// (12) The schemas, sent before recording started, are in the file, so AdvantageScope can decode the structs.
@@ -811,17 +823,25 @@ func TestTelemetryEndToEnd(t *testing.T) {
 	)
 	assert.Nil(t, topicStatus(telemetryTeam(254), rotation), "not listed as recorded in a CSV")
 
+	// (17) 254 and 1114 swap alliances for this session, then swap back partway through it.
+	assign(1114, 971, 254)
 	status, body = call("PUT", "/api/recording", map[string]any{"active": true})
 	require.Equal(t, 200, status)
 	recording = body["recording"].(map[string]any)
 	assert.Equal(t, "csv", recording["format"])
 	csvDir := recording["folder"].(string)
 	recordStart = time.Now()
-	time.Sleep(time.Second)
+	require.Eventually(
+		t, func() bool { return len(sessionFiles(t, csvDir)) == 3 }, 3*time.Second, 50*time.Millisecond,
+		"both teams' files and stations.json",
+	)
+	assign(254, 971, 1114)
+	time.Sleep(time.Second - time.Since(recordStart))
 	status, _ = call("PUT", "/api/recording", map[string]any{"active": false})
 	require.Equal(t, 200, status)
 	expectedValues = int(time.Since(recordStart) / (20 * time.Millisecond))
-	assert.Equal(t, []string{"1114.csv", "254.csv"}, sessionFiles(t, csvDir))
+	assert.Equal(t, []string{"1114.csv", "254.csv", "stations.json"}, sessionFiles(t, csvDir))
+	assert.Equal(t, map[string]string{"1114": "R1", "254": "B2"}, readStationsFile(t, csvDir))
 	csvData, err := os.ReadFile(filepath.Join(csvDir, "254.csv"))
 	require.Nil(t, err)
 	lines := strings.Split(strings.TrimSuffix(string(csvData), "\n"), "\n")

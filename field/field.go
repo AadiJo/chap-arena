@@ -9,10 +9,12 @@
 package field
 
 import (
+	"errors"
 	"fmt"
 	"github.com/Team254/cheesy-arena/model"
 	"github.com/Team254/cheesy-arena/network"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +89,10 @@ type Field struct {
 
 	// Serializes switch reconfiguration so the last apply always wins.
 	switchMutex sync.Mutex
+
+	// Serializes Apply and ReassignStation, so a team changing its station from the stations it read can't undo an apply
+	// that landed in between. Taken before mutex.
+	applyMutex sync.Mutex
 }
 
 // Loads settings and the last applied station assignment from the database. The access point is told to expect that
@@ -185,6 +191,45 @@ func (field *Field) TeamWpaKey(teamId int) (string, bool, error) {
 // (in the background, since the switch takes several seconds). Assigned stations with a blank WPA key get the default
 // key from settings. New WPA keys are saved to each team's database record.
 func (field *Field) Apply(assignments [6]Assignment) error {
+	field.applyMutex.Lock()
+	defer field.applyMutex.Unlock()
+	return field.apply(assignments)
+}
+
+// Gives the station teamId is on to a new team and WPA key, for a team changing its own station from the team page,
+// and applies it like Apply with the other five stations as they are. A blank key uses the new team's saved key (so a
+// team keeps its own), else the default. Returns a ValidationError, changing nothing, if teamId isn't on a station, the
+// new team number is missing, or Apply would reject the result.
+func (field *Field) ReassignStation(teamId int, assignment Assignment) error {
+	field.applyMutex.Lock()
+	defer field.applyMutex.Unlock()
+	field.mutex.Lock()
+	assignments := field.assignments
+	field.mutex.Unlock()
+	station := slices.IndexFunc(assignments[:], func(a Assignment) bool { return a.TeamId == teamId })
+	if teamId == 0 || station == -1 {
+		return ValidationError(fmt.Sprintf("team %d isn't on a station", teamId))
+	}
+	if assignment.TeamId == 0 {
+		return ValidationError("enter a team number")
+	}
+	if assignment.WpaKey == "" {
+		savedKey, _, err := field.TeamWpaKey(assignment.TeamId)
+		if err != nil {
+			return err
+		}
+		assignment.WpaKey = savedKey
+	}
+	assignments[station] = assignment
+	err := field.apply(assignments)
+	if !errors.As(err, new(ValidationError)) {
+		log.Printf("Team %d changed %s to team %d from the team page.", teamId, StationNames[station], assignment.TeamId)
+	}
+	return err
+}
+
+// Apply without applyMutex, which the caller holds.
+func (field *Field) apply(assignments [6]Assignment) error {
 	field.mutex.Lock()
 	defaultWpaKey := field.settings.DefaultWpaKey
 	field.mutex.Unlock()

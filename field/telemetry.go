@@ -548,11 +548,19 @@ func (telemetry *telemetry) handle(link *robotLink, event nt.Event) {
 		stats.last = formatValue(event.Data)
 		// A section skips types the format can't hold; a topic saved by name is kept regardless.
 		if telemetry.recorder != nil && (exact || formatHolds(telemetry.recorder.format, event.Topic.Type)) {
-			if err := telemetry.recorder.write(link.teamId, event); err != nil {
+			if err := telemetry.recorder.write(link.teamId, telemetry.stationOf(link.teamId), event); err != nil {
 				telemetry.stopRecording(err.Error())
 			}
 		}
 	}
+}
+
+// The station a team is on, e.g. "R1", or "" if it's off the field. Caller holds the mutex.
+func (telemetry *telemetry) stationOf(teamId int) string {
+	if i := slices.Index(telemetry.stationTeams[:], teamId); i != -1 {
+		return StationNames[i]
+	}
+	return ""
 }
 
 // Keeps the type of a topic saved by name so it still shows while the robot is away. Caller holds the mutex.

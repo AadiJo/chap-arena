@@ -28,8 +28,8 @@ const logTailLines = 200
 func main() {
 	dbPath := flag.String("db", "", "Path to the event database (default: event.db next to the executable)")
 	port := flag.Int("port", 8080, "HTTP port for the web UI")
-	recordingsPort := flag.Int(
-		"recordings-port", 80, "HTTP port for the read-only recordings page that driver stations can reach",
+	teamPort := flag.Int(
+		"team-port", 80, "HTTP port for the team page that driver stations can reach (see web/team.go)",
 	)
 	noBrowser := flag.Bool("no-browser", false, "Don't open the web UI in a browser on startup")
 	flag.Parse()
@@ -75,28 +75,28 @@ func main() {
 		openBrowser(url)
 	}
 
-	serveRecordings(recordingsDir, *recordingsPort)
+	serveTeamPage(field, recordingsDir, *teamPort)
 
 	// Run the access point monitoring loop in the main thread.
 	field.Run()
 }
 
-// Serves the recordings folder read-only on port for driver stations. Failing to bind (e.g. port 80 without root on
-// Linux) only disables the page, since the rest of the app works without it.
-func serveRecordings(recordingsDir string, port int) {
-	// Create the folder up front so the page lists an empty folder instead of a 404 before the first recording.
+// Serves the team page for driver stations on port. Failing to bind (e.g. port 80 without root on Linux) only disables
+// the page, since the rest of the app works without it.
+func serveTeamPage(field *field.Field, recordingsDir string, port int) {
+	// Create the folder up front so Downloads lists no sessions instead of failing before the first recording.
 	if err := os.MkdirAll(recordingsDir, 0755); err != nil {
-		log.Printf("Recordings page disabled: %v", err)
+		log.Printf("Team page disabled: %v", err)
 		return
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Printf("Recordings page disabled: %v", err)
+		log.Printf("Team page disabled: %v", err)
 		return
 	}
-	log.Printf("Recordings page for driver stations at http://10.0.100.5:%d/", port)
+	log.Printf("Team page for driver stations at http://10.0.100.5:%d/", port)
 	go func() {
-		log.Println("Recordings page stopped: ", http.Serve(listener, web.NewRecordingsHandler(recordingsDir)))
+		log.Println("Team page stopped: ", http.Serve(listener, web.NewTeamHandler(field, recordingsDir)))
 	}()
 }
 

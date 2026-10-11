@@ -1,7 +1,9 @@
-// Demo mode for previewing the UI without field hardware. Only active when the URL has ?demo; otherwise it does nothing.
-// Load it in <head> without defer, before /app.js, so fetch is replaced before the first status poll.
+// Demo mode for previewing the admin UI and the team page without field hardware. Only active when the URL has ?demo;
+// otherwise it does nothing. Load it in <head> without defer, before /app.js or /team.js, so fetch is replaced before
+// the first poll.
 //
-// Replaces fetch for /api/* with an in-browser fake of web.go that never touches the server. Apply plays the same
+// Replaces fetch for /api/* with an in-browser fake of web.go and team.go that never touches the server (downloads
+// still go to it). Apply plays the same
 // sequence as field.Apply: the AP goes CONFIGURING then ACTIVE, the switch configures in the background, and each
 // assigned radio shows "no link" until it associates and links a few seconds later. Settings and WPA keys live in
 // memory and reset on reload. Validation messages match field.validateAssignments and field.UpdateSettings, and a blank
@@ -15,7 +17,12 @@
 // two made-up topic lists, one shaped like an AdvantageKit robot's. Teams save entries (topics, sections and exclusions,
 // see topics.js); recorded topics report 50 Hz and values that change over time, formatted as the server formats them.
 // Undecoded structs are supported only while the recording format is WPILOG. Recording only counts; nothing is written
-// anywhere. Needs /topics.js loaded first.
+// anywhere.
+//
+// The team page's computer stands at the station ?demo names (?demo=B2), or R1. Handing the station to another team
+// takes it off any station, as unplugging would, until it "replugs" a few seconds later onto the new team's network.
+// Downloads lists four made-up sessions, labeled as recordings.go labels them, with teams on different stations from one
+// to the next; the oldest is from before the recorder noted stations. Needs /topics.js loaded first.
 
 "use strict";
 
@@ -346,6 +353,71 @@
     return [200, telemetry()];
   }
 
+  // The team page's view, as team.go builds it for the computer at myStation.
+  const myStation = Math.max(0, stationNames.indexOf((new URLSearchParams(location.search).get("demo") ?? "").toUpperCase()));
+  let replugging = false;
+  function stationView() {
+    const { station, assignment, wifi } = state.stations[myStation];
+    if (replugging || !assignment.teamId) return { station: "", teamId: 0, wpaKey: "", wifi: null, telemetry: null };
+    return {
+      station, teamId: assignment.teamId, wpaKey: assignment.wpaKey, wifi,
+      telemetry: telemetryTeam(assignment.teamId, station),
+    };
+  }
+  const notOnStation = [403, { error: "this computer isn't on a station's network" }];
+
+  // Follows field.ReassignStation: a blank key uses the team's saved one, and the other stations stay as they are.
+  function reassignStation(body) {
+    const view = stationView();
+    if (!view.station) return notOnStation;
+    if (!body.teamId) return [400, { error: "enter a team number" }];
+    const assignments = state.stations.map((s) => s.assignment);
+    assignments[myStation] = { teamId: body.teamId, wpaKey: body.wpaKey || wpaKeys.get(body.teamId) || "" };
+    const [status, result] = apply(assignments);
+    if (status !== 200) return [status, result];
+    log(`Team ${view.teamId} changed ${view.station} to team ${body.teamId} from the team page.`);
+    if (body.teamId !== view.teamId) {
+      replugging = true;
+      setTimeout(() => { replugging = false; }, 6000);
+    }
+    return [200, stationView()];
+  }
+
+  function setStationTopics(body) {
+    const view = stationView();
+    if (!view.station) return notOnStation;
+    const [status, result] = setTeamTopics(view.teamId, body);
+    return status === 200 ? [200, stationView()] : [status, result];
+  }
+
+  // Sessions for the Downloads tab, named like recorder folders and labeled like recordings.go's sessionLabel.
+  function recordings() {
+    const pad = (n) => String(n).padStart(2, "0");
+    // Days ago, start time, and each team's station then ("" when not noted).
+    const sessions = [
+      [0, 14, 32, { 254: "R1", 1678: "R2", 971: "R3", 118: "B1", 6328: "B2" }],
+      [0, 11, 5, { 118: "R1", 254: "R2", 1678: "R3", 2056: "B1", 971: "B2", 6328: "B3" }],
+      [1, 16, 30, { 1678: "R1", 6328: "R3", 254: "B1", 118: "B2", 2056: "B3" }],
+      [8, 9, 0, { 254: "", 118: "" }],
+    ];
+    const today = new Date();
+    return {
+      sessions: sessions.map(([daysAgo, hour, minute, teams]) => {
+        const at = new Date(today.getFullYear(), today.getMonth(), today.getDate() - daysAgo, hour, minute, 5);
+        const name = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}_${pad(hour)}${pad(minute)}05`;
+        const clock = `${hour % 12 || 12}:${pad(minute)} ${hour < 12 ? "AM" : "PM"}`;
+        const day = daysAgo === 0 ? "Today" : daysAgo === 1 ? "Yesterday"
+          : at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const files = Object.entries(teams).map(([team, station]) => ({ teamId: Number(team), station }))
+          .sort((a, b) => a.teamId - b.teamId)
+          .map(({ teamId, station }) => ({
+            name: `${teamId}.wpilog`, teamId, station, size: `${(2 + ((teamId + hour * 7) % 19) / 10).toFixed(1)} MB`,
+          }));
+        return { name, label: `${day}, ${clock}`, files };
+      }),
+    };
+  }
+
   function setRecording(active) {
     if (active && !state.recording.active) {
       const now = new Date();
@@ -366,6 +438,10 @@
 
   function route(method, path, body) {
     if (method === "GET" && path === "/api/status") return [200, state];
+    if (method === "GET" && path === "/api/station") return [200, stationView()];
+    if (method === "PUT" && path === "/api/station") return reassignStation(body);
+    if (method === "PUT" && path === "/api/topics") return setStationTopics(body);
+    if (method === "GET" && path === "/api/recordings") return [200, recordings()];
     if (method === "GET" && path === "/api/telemetry") return [200, telemetry()];
     if (method === "PUT" && path === "/api/recording") return setRecording(Boolean(body.active));
     const teamTopicsPath = path.match(/^\/api\/teams\/(\d+)\/topics$/);

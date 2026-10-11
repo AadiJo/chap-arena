@@ -1,5 +1,6 @@
 // Records NetworkTables values in a format AdvantageScope opens: one folder per recording session, and one file per team
-// inside it, named for the team number (254.wpilog or 254.csv).
+// inside it, named for the team number (254.wpilog or 254.csv). Beside them, stations.json notes the station each team
+// was on (see RecordingStationsFile).
 //
 // WPILOG (recording_wpilog.go) keeps every value with its type, as WPILib's DataLogManager does, so poses and other
 // structs work in AdvantageScope's field and swerve views. CSV (recording_csv.go) is AdvantageScope's own CSV layout,
@@ -15,6 +16,7 @@ package field
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"github.com/Team254/cheesy-arena/nt"
 	"os"
@@ -32,8 +34,12 @@ const (
 )
 
 // Session folders are named for the local time recording started in this layout, plus -2, -3 and so on if two start in
-// the same second. The recordings page reads the time back out to label each session.
+// the same second. The team page's Downloads tab reads the time back out to label each session.
 const RecordingFolderLayout = "2006-01-02_150405"
+
+// Each session folder also holds this file, mapping team numbers to the station each team was on when its file started,
+// e.g. {"254": "R1"}, so the team page can show the alliance a team played on in that session.
+const RecordingStationsFile = "stations.json"
 
 const (
 	ntKeyPrefix   = "NT:"        // Before each topic's path in a recording, as in DataLogManager's logs.
@@ -54,6 +60,7 @@ type recorder struct {
 	values    int
 	files     map[int]*teamFile           // By team id, created on the team's first value.
 	schemas   map[int]map[string]nt.Value // Each team's latest schemas, by topic name. Kept only for WPILOG.
+	stations  map[int]string              // The station each team was on when its file was created, as in stations.json.
 }
 
 // One team's file in a recording.
@@ -93,14 +100,15 @@ func startRecorder(recordingsDir, format string) (*recorder, error) {
 	}
 	return &recorder{
 		dir: absoluteDir, format: format, startedAt: startedAt, files: map[int]*teamFile{},
-		schemas: map[int]map[string]nt.Value{},
+		schemas: map[int]map[string]nt.Value{}, stations: map[int]string{},
 	}, nil
 }
 
-// Appends a value, creating the team's file on its first value.
-func (recorder *recorder) write(teamId int, value nt.Value) error {
+// Appends a value, creating the team's file on its first value. station is the one the team is on now ("" if none),
+// noted in stations.json when the file is created; a team that moves mid-session keeps the station it started on.
+func (recorder *recorder) write(teamId int, station string, value nt.Value) error {
 	timestamp := recorder.timestamp(value.Time)
-	file, err := recorder.file(teamId, timestamp)
+	file, err := recorder.file(teamId, station, timestamp)
 	if err != nil {
 		return err
 	}
@@ -129,8 +137,9 @@ func (recorder *recorder) timestamp(t time.Time) int64 {
 	return max(0, t.Sub(recorder.startedAt).Microseconds())
 }
 
-// Returns the team's file, creating it with its header, systemTime and any schemas already received if it's new.
-func (recorder *recorder) file(teamId int, timestamp int64) (*teamFile, error) {
+// Returns the team's file, creating it with its header, systemTime and any schemas already received if it's new, and
+// noting station for it in stations.json.
+func (recorder *recorder) file(teamId int, station string, timestamp int64) (*teamFile, error) {
 	if file := recorder.files[teamId]; file != nil {
 		return file, nil
 	}
@@ -157,6 +166,16 @@ func (recorder *recorder) file(teamId int, timestamp int64) (*teamFile, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		if err := file.log.write(timestamp, recorder.schemas[teamId][name]); err != nil {
+			return nil, err
+		}
+	}
+	if station != "" {
+		recorder.stations[teamId] = station
+		data, err := json.Marshal(recorder.stations)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(recorder.dir, RecordingStationsFile), data, 0644); err != nil {
 			return nil, err
 		}
 	}

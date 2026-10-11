@@ -223,12 +223,12 @@ func TestRecorderWpilog(t *testing.T) {
 
 	// A schema received before the team's file exists waits for it; one received after is written straight away.
 	require.Nil(t, recorder.writeSchema(254, poseSchema))
-	require.Nil(t, recorder.write(254, recordedValue(recorder, -5*time.Millisecond, "/Pose", "struct:Pose2d", pose)))
+	require.Nil(t, recorder.write(254, "", recordedValue(recorder, -5*time.Millisecond, "/Pose", "struct:Pose2d", pose)))
 	require.Nil(t, recorder.writeSchema(254, akitSchema))
-	require.Nil(t, recorder.write(254, recordedValue(recorder, 3*time.Millisecond, "/Mode", "int", int64(2))))
+	require.Nil(t, recorder.write(254, "", recordedValue(recorder, 3*time.Millisecond, "/Mode", "int", int64(2))))
 	// The robot was redeployed with /Mode as a string.
-	require.Nil(t, recorder.write(254, recordedValue(recorder, 4*time.Millisecond, "/Mode", "string", "AUTO")))
-	require.Nil(t, recorder.write(1114, recordedValue(recorder, 5*time.Millisecond, "/Pose", "struct:Pose2d", pose)))
+	require.Nil(t, recorder.write(254, "", recordedValue(recorder, 4*time.Millisecond, "/Mode", "string", "AUTO")))
+	require.Nil(t, recorder.write(1114, "", recordedValue(recorder, 5*time.Millisecond, "/Pose", "struct:Pose2d", pose)))
 	require.Nil(t, recorder.close())
 	assert.Equal(t, 4, recorder.values)
 
@@ -278,11 +278,11 @@ func TestRecorderCsv(t *testing.T) {
 	require.Nil(t, recorder.writeSchema(254, recordedValue(recorder, 0, "/.schema/struct:Pose2d", "structschema", []byte("x"))))
 	require.Nil(
 		t, recorder.write(
-			254, recordedValue(recorder, 1500*time.Millisecond, "/Pose", "struct:Pose2d", nt.Pose2d{X: 1.5, Y: -2, Rotation: 0.5}),
+			254, "", recordedValue(recorder, 1500*time.Millisecond, "/Pose", "struct:Pose2d", nt.Pose2d{X: 1.5, Y: -2, Rotation: 0.5}),
 		),
 	)
-	require.Nil(t, recorder.write(254, recordedValue(recorder, 2_000_001*time.Microsecond, "/Auto, chosen", "string", "Left, far")))
-	require.Nil(t, recorder.write(254, recordedValue(recorder, 12*time.Second, "/Speeds", "double[]", []float64{1, 2.5})))
+	require.Nil(t, recorder.write(254, "", recordedValue(recorder, 2_000_001*time.Microsecond, "/Auto, chosen", "string", "Left, far")))
+	require.Nil(t, recorder.write(254, "", recordedValue(recorder, 12*time.Second, "/Speeds", "double[]", []float64{1, 2.5})))
 	require.Nil(t, recorder.close())
 
 	data, err := os.ReadFile(filepath.Join(recorder.dir, "254.csv"))

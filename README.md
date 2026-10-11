@@ -60,7 +60,7 @@ turn FMS on. If the app stops, driver stations stop hearing from it and disable 
 
 The Teams page picks NetworkTables topics to record from each team's robot, for example its pose to compare against an
 overhead camera. Topics are saved per team (in `event.db`, next to its WPA key), so they follow the team to any
-station.
+station. Teams can also pick their own from the [team page](#team-page-for-driver-stations).
 
 The app connects to every robot on the field as a read-only NT4 client (`10.TE.AM.2:5810`, named `chap-arena`) and
 shows everything the robot publishes as a tree, like AdvantageScope's sidebar. A green + records a topic, or a whole
@@ -70,7 +70,7 @@ even if the robot isn't connected yet. Recording lists only what's recorded. Eac
 last value.
 
 Record, in the header, starts a session folder in `recordings/` next to the database, with one file per team named for
-its number (`254.wpilog`). It records every value the robot publishes (usually 50 Hz), not a sampled rate. Pick the
+its number (`254.wpilog`), and a `stations.json` noting the station each team was on when its file started. It records every value the robot publishes (usually 50 Hz), not a sampled rate. Pick the
 format under Recording on the Settings page. Both open in [AdvantageScope](https://docs.advantagescope.org/):
 
 - **WPILOG** (the default) is WPILib's log format, as DataLogManager writes it. Every topic keeps its type, and the
@@ -98,20 +98,37 @@ ip access-list extended DS-FMS
  permit tcp any eq 5810 10.0.100.0 0.0.0.255 established
 ```
 
-## Recordings page for driver stations
+## Team page for driver stations
 
-Driver stations can browse and download every recording at `http://10.0.100.5/`. It's a separate, read-only server on
-port 80 (change it with `-recordings-port`), so teams can't reach the admin UI, which can enable robots and shows WPA
-keys and passwords. The log shows the page's address at startup, or why it couldn't start (on Linux, port 80 needs
-root).
+Driver stations open `http://10.0.100.5/` for their own station's page. It's a separate server on port 80 (change it
+with `-team-port`), so teams can't reach the admin UI, which can enable robots and shows WPA keys and passwords. The log
+shows the page's address at startup, or why it couldn't start (on Linux, port 80 needs root).
+
+The page knows which station it's on from the computer's address: the switch gives each assigned team the
+`10.TE.AM.0/24` network, so a request from `10.2.54.x` is team 254's. It has two tabs:
+
+- **Setup** shows the station in its alliance's color with its team number, radio password, radio link and NT status.
+  The password is the one the app last sent the AP for the station (the AP itself only reports a hash), so a team can
+  check what its radio needs. A team can change the team number and password and hit Apply; that station changes and
+  the other five stay as applied. A new team number clears the password, and leaving it blank uses that team's saved
+  one, or the default WPA key. After a new team number, unplug and replug the driver station's Ethernet to join the new
+  team's network. Under the station
+  is the same topic tree as the Teams page, for picking what's recorded from this team's robot.
+- **Downloads** lists every recording session, newest first and open. This team's file in each session is marked in the
+  color of the alliance it played on then, which needn't be where it is now; sessions recorded before stations were
+  noted mark it in white. Each file downloads rather than opening in the browser.
+
+Anyone plugged into a station's port can see and change that station's password, so the port is the only lock. A
+station on the default WPA key shows the default. From anywhere else on the
+field network (the admin network, `10.0.100.x`, or this computer) the page only offers Downloads. Add `?demo` to try it
+without hardware, or `?demo=B2` to stand in another station.
 
 A driver station can stay on Wi-Fi at the same time. Each team's DHCP pool gives it a route to the FMS subnet
 (`10.0.100.0/24`) through the field switch, so FMS traffic goes over Ethernet and everything else over Wi-Fi. It picks
 the route up when it gets its address, so unplug and replug the Ethernet after applying stations with an older version.
 
 A team's network only reaches the FMS while that team is assigned to a station, so teams should download their logs
-before the next match's stations are applied. A computer on the admin network (`10.0.100.x`) can reach the page at any
-time. On Windows, allow the firewall prompt the first time the app starts.
+before the next match's stations are applied. On Windows, allow the firewall prompt the first time the app starts.
 
 The field switch has to let driver stations reach port 80. `switch_config.txt` includes the line; add it to the
 `DS-FMS` access list on a switch set up from an older copy. Don't open port 8080, the admin UI, to team networks.

@@ -7,12 +7,14 @@ connection to driver stations (off at startup) for enabling and disabling every 
 each robot's NetworkTables through the NT4 client in `nt/` and records each team's topics and sections to WPILOG or CSV for AdvantageScope (`field/recording*.go`). `model/` reads and writes the BoltDB `event.db`, which
 is shared with full Cheesy Arena. `web/` serves the JSON API and the single-page UI in `web/static/`, embedded in the
 binary: markup and CSS in `index.html`, logic in `app.js` (its header comment lists the markup contract), `topics.js`,
-the rules for what a team records (shared with `demo.js` and mirrored in `field/telemetry.go`), and `demo.js`, which
-fakes the API when the URL has `?demo`. `web/recordings.go` is the read-only recordings page for driver stations,
-on its own port so the switch can open it to team networks without exposing the admin UI.
+the rules for what a team records (shared with `demo.js` and mirrored in `field/telemetry.go`), `topic-tree.js` and
+`topic-tree.css`, the topic tree both pages show, `helpers.js`, small helpers the page scripts share, and `demo.js`,
+which fakes the API when the URL has `?demo`. `web/team.go` is the team page for driver stations (`web/team/`), on
+its own port so the switch can open it to team networks without exposing the admin UI; it works out the station from
+the request's address and serves recordings through `web/recordings.go`.
 `web/e2e_test.go` runs the whole app against a fake access point, `web/driver_station_e2e_test.go` against fake driver
-stations, `web/telemetry_e2e_test.go` against fake NT4 robots, and `web/recordings_e2e_test.go` covers the recordings
-page; all write transcripts to `e2e-output/`.
+stations, `web/telemetry_e2e_test.go` against fake NT4 robots, `web/team_e2e_test.go` covers the team page from each
+station's network, and `web/recordings_e2e_test.go` its downloads; all write transcripts to `e2e-output/`.
 
 ## Build, Test, and Development Commands
 See `go.mod` for what version of Go to use.
