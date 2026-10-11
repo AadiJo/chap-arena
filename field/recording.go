@@ -31,6 +31,10 @@ const (
 	DefaultRecordingFormat = RecordingWpilog
 )
 
+// Session folders are named for the local time recording started in this layout, plus -2, -3 and so on if two start in
+// the same second. The recordings page reads the time back out to label each session.
+const RecordingFolderLayout = "2006-01-02_150405"
+
 const (
 	ntKeyPrefix   = "NT:"        // Before each topic's path in a recording, as in DataLogManager's logs.
 	systemTimeKey = "systemTime" // DataLogManager's name for the wall clock, in microseconds since 1970.
@@ -72,7 +76,7 @@ func validRecordingFormat(format string) bool {
 // Creates a new session folder under recordingsDir, named for the current time.
 func startRecorder(recordingsDir, format string) (*recorder, error) {
 	startedAt := time.Now()
-	base := filepath.Join(recordingsDir, startedAt.Format("2006-01-02_150405"))
+	base := filepath.Join(recordingsDir, startedAt.Format(RecordingFolderLayout))
 	dir := base
 	for i := 2; ; i++ {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {

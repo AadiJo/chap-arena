@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<!--
+The logs page driver stations reach on the recordings port (rendered by recordings.go). At the top level it lists
+session folders, newest first. Inside one it lists the team files, each a download. Styled like the admin UI's Settings
+lists, with the palette copied from static/index.html. Dark only, no JavaScript.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{with .Session}}{{.Label}} - {{end}}Logs</title>
+<style>
+  :root {
+    --bg: #000; --panel: #0b0b0b; --fg: #fff; --fg2: #a3a3a3; --fg3: #5e5e5e; --line: #1c1c1c; --line2: #2e2e2e; --fill: #161616;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 "SF Pro Text", -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif; -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; }
+  svg { width: 16px; height: 16px; display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 28px 60px; }
+
+  /* The title lines up with the text in the rows below (the list's 1px border plus the rows' 16px padding). "Logs" looks
+     and sits the same on every page; in a session it links back to the list, and the session's label follows a slash. */
+  h1 { display: flex; align-items: baseline; gap: 6px; font-size: 15px; font-weight: 600; letter-spacing: -.01em; margin: 0 17px 16px; }
+  h1 a { color: inherit; text-decoration: none; }
+  h1 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  h1 .sep { color: var(--fg3); }
+
+  .list { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .row { display: grid; align-items: center; gap: 14px; padding: 9px 16px; min-height: 52px; position: relative; color: inherit; text-decoration: none; }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--line); }
+  .row:hover { background: var(--fill); }
+  .row:focus-visible { outline: 2px solid var(--fg2); outline-offset: -2px; }
+  .row small { display: block; margin-top: 1px; font-size: 12px; color: var(--fg3); }
+  .row > svg { color: var(--fg3); }
+  .session { grid-template-columns: 18px 1fr 16px; }
+  /* The name and size sit on one baseline, and the row centers that line beside the button. Centering each cell on its
+     own would leave the small size 2px above the team number's baseline. */
+  .file { grid-template-columns: 1fr 30px; }
+  .file .line { display: flex; align-items: baseline; gap: 14px; }
+  .file .name { flex: 1; }
+  .file b { font-size: 18px; font-weight: 700; letter-spacing: -.02em; }
+  .file .ext { color: var(--fg3); }
+  .meta { font-size: 12px; color: var(--fg2); white-space: nowrap; }
+  .dl { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: var(--line); }
+  .row:hover .dl { background: var(--line2); }
+  .empty { margin: 0; padding: 14px 16px; font-size: 13px; color: var(--fg3); }
+</style>
+</head>
+<body>
+<!-- Icons: Lucide (lucide.dev, ISC license), inlined like the admin UI's so they work without internet. -->
+<svg width="0" height="0" style="position: absolute" aria-hidden="true">
+  <symbol id="folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+</svg>
+<main>
+  {{with .Session}}
+  <h1><a href="/">Logs</a><span class="sep" aria-hidden="true">/</span>{{.Label}}</h1>
+  {{else}}
+  <h1>Logs</h1>
+  {{end}}
+  <div class="list">
+    {{range .Sessions}}
+    <a class="row session" href="{{.Name}}/">
+      <svg aria-hidden="true"><use href="#folder"/></svg>
+      <span>{{.Label}}{{if ne .Label .Name}}<small class="mono">{{.Name}}</small>{{end}}</span>
+      <svg aria-hidden="true"><use href="#right"/></svg>
+    </a>
+    {{end}}
+    {{range .Files}}
+    <a class="row file" href="{{.Name}}" download>
+      <span class="line">
+        <span class="name"><b>{{.Stem}}</b><span class="ext mono">{{.Ext}}</span></span>
+        <span class="meta">{{.Size}}</span>
+      </span>
+      <span class="dl" aria-hidden="true"><svg><use href="#download"/></svg></span>
+    </a>
+    {{end}}
+    {{if not (or .Sessions .Files)}}
+    <p class="empty">{{if .Session}}Nothing recorded in this session yet.{{else}}No logs yet. They show up here once recording starts.{{end}}</p>
+    {{end}}
+  </div>
+</main>
+</body>
+</html>
