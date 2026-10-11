@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/update"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/bbolt"
@@ -145,7 +146,7 @@ func TestEndToEnd(t *testing.T) {
 		)
 		require.Nil(t, err)
 		go fieldController.Run()
-		return database, httptest.NewServer(NewWeb(fieldController, logTail).newHandler())
+		return database, httptest.NewServer(NewWeb(fieldController, logTail, update.New(update.Options{Current: "dev"})).newHandler())
 	}
 	database, server := startApp()
 

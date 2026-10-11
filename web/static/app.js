@@ -22,6 +22,10 @@
 // (red|blue|none) and aria-current="true" when selected. Rows get data-key and are updated in place, and team-list gets
 // data-empty text for when it's empty.
 //
+// Software (all optional): version shows the running version. update-row (hidden unless there's an update) holds
+// update-note, update-version, update-progress (a bar whose <i> width is set) and the update button. body gets
+// data-update (available|none). The page reloads itself once the server comes back from an update as another version.
+//
 // FMS mode: buttons with data-ds-mode (off|disabled|enabled) set it and get aria-pressed="true" when current; body gets
 // data-ds-mode. Space sets disabled from anywhere but a text field while FMS is on.
 //
@@ -222,6 +226,7 @@ function renderStatus() {
   setText($("ap-status"), lastStatus.accessPointStatus, hardwareState(lastStatus.accessPointStatus));
   setText($("switch-status"), lastStatus.switchStatus, hardwareState(lastStatus.switchStatus));
   renderRecording();
+  renderUpdate();
   document.body.dataset.dsMode = lastStatus.driverStationMode;
   for (const button of document.querySelectorAll("[data-ds-mode]")) {
     button.setAttribute("aria-pressed", String(button.dataset.dsMode === lastStatus.driverStationMode));
@@ -302,6 +307,68 @@ async function poll() {
     setText($("ap-status"), "app unreachable", "bad");
   } finally {
     setTimeout(poll, 1000);
+  }
+}
+
+// Updates.
+
+// Version this page was loaded from. When the status reports another, the server restarted into an update and the page
+// reloads to pick up the new UI.
+let pageVersion = null;
+
+function renderUpdate() {
+  const update = lastStatus.update;
+  pageVersion ??= update.current;
+  if (update.current !== pageVersion) {
+    location.reload();
+    return;
+  }
+  setText($("version"), update.current);
+  const release = update.available;
+  document.body.dataset.update = release ? "available" : "none";
+  const row = $("update-row");
+  if (!row) return;
+  row.hidden = !release;
+  if (!release) return;
+
+  // Mirrors web.updateBlocker, which has the final say.
+  const blocked = lastStatus.driverStationMode !== "off" ? "Turn FMS off to update"
+    : lastStatus.recording.active ? "Stop recording to update" : "";
+  const busy = update.state === "downloading" || update.state === "restarting";
+  const megabytes = (bytes) => (bytes / 1e6).toFixed(1);
+  const note = $("update-note");
+  if (update.state === "downloading") {
+    setText(note, `Downloading ${megabytes(update.downloaded)} of ${megabytes(release.size)} MB`);
+  } else if (update.state === "restarting") {
+    setText(note, "Restarting. This page reloads when it's back.");
+  } else if (blocked) {
+    setText(note, blocked, "warn");
+  } else if (update.state === "failed") {
+    setText(note, update.error, "bad");
+  } else {
+    const published = new Date(release.publishedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    setText(note, `Released ${published}`);
+  }
+  setText($("update-version"), release.version);
+  const progress = $("update-progress");
+  if (progress) {
+    progress.hidden = update.state !== "downloading";
+    progress.firstElementChild.style.width = `${Math.min(100, (100 * update.downloaded) / (release.size || 1))}%`;
+  }
+  const button = $("update");
+  button.hidden = busy;
+  button.disabled = Boolean(blocked);
+}
+
+async function startUpdate() {
+  const button = $("update");
+  button.disabled = true;
+  try {
+    lastStatus = await api("POST", "/api/update");
+    renderStatus();
+  } catch (error) {
+    setText($("update-note"), error.message, "bad");
+    button.disabled = false;
   }
 }
 
@@ -512,6 +579,7 @@ $("clear").addEventListener("click", () => {
   if (lastStatus) renderStatus();
 });
 $("save-settings").addEventListener("click", saveSettings);
+$("update")?.addEventListener("click", startUpdate);
 $("record").addEventListener("click", () => {
   // Don't leave focus on the button, where Space (which disables robots) would press it again.
   $("record").blur();

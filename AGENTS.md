@@ -11,10 +11,12 @@ the rules for what a team records (shared with `demo.js` and mirrored in `field/
 `topic-tree.css`, the topic tree both pages show, `helpers.js`, small helpers the page scripts share, and `demo.js`,
 which fakes the API when the URL has `?demo`. `web/team.go` is the team page for driver stations (`web/team/`), on
 its own port so the switch can open it to team networks without exposing the admin UI; it works out the station from
-the request's address and serves recordings through `web/recordings.go`.
+the request's address and serves recordings through `web/recordings.go`. `update/` checks GitHub for a newer release,
+swaps it in for the running executable and restarts into it; `main.version` is set by `release.yml`.
 `web/e2e_test.go` runs the whole app against a fake access point, `web/driver_station_e2e_test.go` against fake driver
 stations, `web/telemetry_e2e_test.go` against fake NT4 robots, `web/team_e2e_test.go` covers the team page from each
-station's network, and `web/recordings_e2e_test.go` its downloads; all write transcripts to `e2e-output/`.
+station's network, `web/recordings_e2e_test.go` its downloads, and `main_e2e_test.go` builds two versions of the app
+and has one update itself into the other through a fake GitHub; all write transcripts to `e2e-output/`.
 
 ## Build, Test, and Development Commands
 See `go.mod` for what version of Go to use.

@@ -2,8 +2,8 @@
 <!--
 The single-page UI: driver station assignments (red and blue side by side, big team numbers, link bars, driver station
 state when FMS is on), what's recorded from each team's robot as a tree of its NetworkTables topics, the FMS mode
-control (hidden) and Record button in the header, and settings for the network and recording format (grouped lists,
-sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract), /topics.js and
+control (hidden) and Record button in the header, and settings for updates, the network and recording format (grouped
+lists, sticky save bar). Dark only. Logic lives in /app.js (see its header for the markup contract), /topics.js and
 /topic-tree.js, which the team page shares, along with the tree's styles in /topic-tree.css; /demo.js fakes the API
 when the URL has ?demo, for previewing without field hardware.
 -->
@@ -26,7 +26,7 @@ when the URL has ?demo, for previewing without field hardware.
     --neu-raise: inset 1px 1px 0 rgb(255 255 255 / .08), 3px 3px 8px rgb(0 0 0 / .9), -1px -1px 3px rgb(255 255 255 / .05);
     --ind-ok: #34d399; --ind-ok-fg: #6ee7b7; --ind-warn: #fbbf24; --ind-warn-fg: #fcd34d; --ind-bad: #f87171; --ind-bad-fg: #fca5a5; --ind-tint: 22%;
     --red: #ff4d5e; --red-tint: #1a0709; --blue: #4d8dff; --blue-tint: #060e1f;
-    --ok: #3ddc84; --warn: #ffb020; --bad: #ff4d5e;
+    --ok: #3ddc84; --warn: #ffb020; --bad: #ff4d5e; --info: #60a5fa;
     --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
     color-scheme: dark;
   }
@@ -50,6 +50,9 @@ when the URL has ?demo, for previewing without field hardware.
   /* 4px/6px instead of 5px/5px: the box centers cap height, but the eye centers the lowercase letters, which sit low. */
   nav a { color: var(--fg2); text-decoration: none; padding: 4px 16px 6px; text-align: center; font-weight: 500; font-size: 13px; transition: color .2s; }
   nav a[aria-current] { color: var(--fg); }
+  /* The only notice of an update outside Settings: a dot on its tab (body[data-update] is set by app.js). */
+  nav a { position: relative; }
+  body[data-update=available] nav a[data-nav=settings]::after { content: ""; position: absolute; top: 5px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--info); }
 
   /* The incoming view slides in from the side its tab is on, relative to the previous tab (body[data-enter] is set by
      app.js). One-shot, so nothing repaints while idle. */
@@ -220,6 +223,15 @@ when the URL has ?demo, for previewing without field hardware.
   input[type=checkbox]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / .3); transition: transform .15s; }
   input[type=checkbox]:checked { background: var(--ok); }
   input[type=checkbox]:checked::after { transform: translateX(16px); }
+  /* Software section. The update row's version, progress bar and button sit on the right like the other inputs. */
+  .row > .mono { justify-self: end; color: var(--fg2); }
+  .row small[data-state=warn] { color: var(--warn); } .row small[data-state=bad] { color: var(--bad); }
+  /* Baseline, not center: the mono version's font metrics would otherwise sit it higher than the button's text. */
+  .update { display: flex; align-items: baseline; gap: 12px; justify-self: end; }
+  .update button { height: 30px; padding: 0 14px; font-size: 13px; border-radius: 8px; }
+  /* No wider than the button it replaces, so the settings column (sized by its content) doesn't jump. */
+  .progress { width: 130px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--info); transition: width .3s; }
   /* Save stays pinned to the bottom of the window while the settings scroll under it; the fade keeps rows readable. */
   .settings .bar { justify-content: flex-end; position: sticky; bottom: 0; z-index: 5; margin: 8px 0 0; padding: 28px 0 20px; background: linear-gradient(to top, var(--bg) 60%, transparent); }
   .settings .bar #settings-message { margin-right: auto; }
@@ -325,6 +337,14 @@ when the URL has ?demo, for previewing without field hardware.
   </section>
 
   <section id="settings-view" class="settings view" hidden>
+    <div class="caption">Software</div>
+    <div class="list">
+      <div class="row"><label>Version</label><span class="mono" id="version"></span></div>
+      <div class="row" id="update-row" hidden>
+        <label>Update available<small id="update-note"></small></label>
+        <div class="update"><span class="mono" id="update-version"></span><span class="progress" id="update-progress" hidden><i></i></span><button type="button" class="primary" id="update">Update and restart</button></div>
+      </div>
+    </div>
     <div class="caption">Recording</div>
     <div class="list">
       <div class="row"><label for="RecordingFormat">File format<small>Both open in AdvantageScope. Only WPILOG keeps poses for its field views.</small></label><select id="RecordingFormat"><option value="wpilog">WPILOG</option><option value="csv">CSV</option></select></div>

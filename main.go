@@ -9,6 +9,7 @@ import (
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
 	"github.com/Team254/cheesy-arena/nt"
+	"github.com/Team254/cheesy-arena/update"
 	"github.com/Team254/cheesy-arena/web"
 	"io"
 	"log"
@@ -18,9 +19,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 )
 
 const logTailLines = 200
+
+// Release this binary was built as. release.yml sets it with -ldflags "-X main.version=v1.2.3"; local builds are "dev"
+// and never offer updates.
+var version = "dev"
+
+// Where to look for newer releases. Only the self-update end-to-end test changes it (with -X), to a fake GitHub.
+var releasesUrl = update.ReleasesUrl
 
 // Main entry point for the application. event.db, cheesy-arena.log and the recordings folder live next to the executable
 // unless -db is given, in which case they go next to the database. An event.db copied from full Cheesy Arena can be
@@ -33,8 +42,9 @@ func main() {
 	)
 	noBrowser := flag.Bool("no-browser", false, "Don't open the web UI in a browser on startup")
 	flag.Parse()
+	executable := executablePath()
 	if *dbPath == "" {
-		*dbPath = filepath.Join(executableDir(), "event.db")
+		*dbPath = filepath.Join(filepath.Dir(executable), "event.db")
 	}
 
 	// Log to the console, a file that survives restarts, and the tail shown in the UI.
@@ -45,7 +55,7 @@ func main() {
 	}
 	logTail := web.NewLogTail(logTailLines)
 	log.SetOutput(io.MultiWriter(os.Stderr, logFile, logTail))
-	log.Printf("Using database %s, logging to %s", *dbPath, logPath)
+	log.Printf("Chap Arena %s using database %s, logging to %s", version, *dbPath, logPath)
 
 	database, err := model.OpenDatabase(*dbPath)
 	if err != nil {
@@ -68,7 +78,21 @@ func main() {
 	if err != nil {
 		log.Fatalln("Error starting web server: ", err)
 	}
-	go web.NewWeb(field, logTail).Serve(listener)
+	// Restart with the same arguments, minus the browser: the page that started the update reloads itself.
+	restartArgs := os.Args[1:]
+	if !*noBrowser {
+		restartArgs = slices.Concat(restartArgs, []string{"-no-browser"})
+	}
+	updater := update.New(
+		update.Options{
+			Current:     version,
+			ReleasesUrl: releasesUrl,
+			Executable:  executable,
+			Restart:     func() error { return update.Restart(executable, restartArgs) },
+		},
+	)
+	go updater.Run()
+	go web.NewWeb(field, logTail, updater).Serve(listener)
 	url := fmt.Sprintf("http://localhost:%d/", *port)
 	log.Printf("Web UI at %s", url)
 	if !*noBrowser {
@@ -118,7 +142,8 @@ func openBrowser(url string) {
 	go command.Wait()
 }
 
-func executableDir() string {
+// Path of the running executable with symlinks resolved, so an update replaces the real file.
+func executablePath() string {
 	executable, err := os.Executable()
 	if err != nil {
 		log.Fatalln("Error locating executable: ", err)
@@ -127,5 +152,5 @@ func executableDir() string {
 	if err != nil {
 		log.Fatalln("Error locating executable: ", err)
 	}
-	return filepath.Dir(executable)
+	return executable
 }

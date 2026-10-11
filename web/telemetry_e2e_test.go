@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/update"
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -488,7 +489,7 @@ func TestTelemetryEndToEnd(t *testing.T) {
 		},
 	)
 	require.Nil(t, err)
-	server := httptest.NewServer(NewWeb(fieldController, logTail).newHandler())
+	server := httptest.NewServer(NewWeb(fieldController, logTail, update.New(update.Options{Current: "dev"})).newHandler())
 	defer server.Close()
 
 	call := func(method, path string, body any) (int, map[string]any) {

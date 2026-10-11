@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/update"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
@@ -136,7 +137,7 @@ func TestDriverStationsEndToEnd(t *testing.T) {
 	ports := freeDriverStationPorts(t)
 	fieldController, err := field.New(database, field.Options{DriverStationPorts: ports, RecordingsDir: t.TempDir()})
 	require.Nil(t, err)
-	server := httptest.NewServer(NewWeb(fieldController, logTail).newHandler())
+	server := httptest.NewServer(NewWeb(fieldController, logTail, update.New(update.Options{Current: "dev"})).newHandler())
 	defer server.Close()
 
 	call := func(method, path string, body any) (int, map[string]any) {

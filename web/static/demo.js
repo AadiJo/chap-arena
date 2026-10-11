@@ -22,7 +22,11 @@
 // The team page's computer stands at the station ?demo names (?demo=B2), or R1. Handing the station to another team
 // takes it off any station, as unplugging would, until it "replugs" a few seconds later onto the new team's network.
 // Downloads lists four made-up sessions, labeled as recordings.go labels them, with teams on different stations from one
-// to the next; the oldest is from before the recorder noted stations. Needs /topics.js loaded first.
+// to the next; the oldest is from before the recorder noted stations.
+//
+// Updates follow the update package: v0.8.0 is offered over v0.7.1, refused while FMS is on or recording (as in
+// web.updateBlocker), then downloads, restarts and comes back as v0.8.0, which reloads the page and starts over. Needs
+// /topics.js loaded first.
 
 "use strict";
 
@@ -83,6 +87,14 @@
     switchStatus: "ACTIVE",
     lastApplied: new Date().toISOString(),
     log: [],
+    update: {
+      current: "v0.7.1",
+      available: {
+        version: "v0.8.0", size: 9_800_000,
+        publishedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      },
+      state: "idle", downloaded: 0,
+    },
   };
   let settings = {
     ApAddress: "10.0.100.2", ApPassword: "", ApChannel: 37, SwitchAddress: "10.0.100.3", SwitchPassword: "",
@@ -436,7 +448,31 @@
     return [200, state];
   }
 
+  function installUpdate() {
+    const update = state.update;
+    if (state.driverStationMode !== "off") return [409, { error: "turn FMS off to update" }];
+    if (state.recording.active) return [409, { error: "stop recording to update" }];
+    if (update.state === "downloading" || update.state === "restarting") {
+      return [409, { error: "an update is already in progress" }];
+    }
+    state.update = { ...update, state: "downloading", downloaded: 0, error: undefined };
+    log(`Downloading Chap Arena ${update.available.version}`);
+    const tick = setInterval(() => {
+      const downloaded = Math.min(update.available.size, state.update.downloaded + 450_000);
+      state.update = { ...state.update, downloaded };
+      if (downloaded < update.available.size) return;
+      clearInterval(tick);
+      state.update = { ...state.update, state: "restarting" };
+      log(`Restarting into Chap Arena ${update.available.version}`);
+      setTimeout(() => {
+        state.update = { current: update.available.version, available: null, state: "idle", downloaded: 0 };
+      }, 2500);
+    }, 200);
+    return [200, state];
+  }
+
   function route(method, path, body) {
+    if (method === "POST" && path === "/api/update") return installUpdate();
     if (method === "GET" && path === "/api/status") return [200, state];
     if (method === "GET" && path === "/api/station") return [200, stationView()];
     if (method === "PUT" && path === "/api/station") return reassignStation(body);

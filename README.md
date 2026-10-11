@@ -140,6 +140,12 @@ ip access-list extended DS-FMS
 
 ## Settings page
 
+Software shows the running version. When a newer release is on GitHub, a dot appears on the Settings tab and
+**Update and restart** downloads it, checks it against GitHub's sha256 digest, replaces the binary and restarts on the
+same port; the page reloads itself when it's back. FMS has to be off and nothing recording, since a restart drops every
+driver station. `event.db`, the log and recordings are left alone, and the previous binary is kept beside the new one
+with `.old` added to its name in case you need to go back. Builds made with `go build` show as `dev` and don't update.
+
 Access point address, API password, channel and default WPA key; switch address and password; and optional SCC switch
 management. Enter in any field saves. Apart from the default WPA key, these are the same settings full Cheesy Arena
 stores.

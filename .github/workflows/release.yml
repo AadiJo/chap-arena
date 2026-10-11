@@ -37,7 +37,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir chap-arena
-          go build -o "chap-arena/chap-arena${{ matrix.ext }}"
+          # The version lets the app offer newer releases; see the update package.
+          go build -ldflags "-X main.version=${GITHUB_REF_NAME}" -o "chap-arena/chap-arena${{ matrix.ext }}"
           cp LICENSE README.md switch_config.txt chap-arena/
           zip -r -X "chap-arena.${GITHUB_REF_NAME}.${{ matrix.suffix }}.zip" chap-arena
 

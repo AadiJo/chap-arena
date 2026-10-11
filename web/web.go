@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/update"
 	"io/fs"
 	"log"
 	"net"
@@ -25,10 +26,11 @@ var staticFiles embed.FS
 type Web struct {
 	field   *field.Field
 	logTail *LogTail
+	updater *update.Updater
 }
 
-func NewWeb(field *field.Field, logTail *LogTail) *Web {
-	return &Web{field: field, logTail: logTail}
+func NewWeb(field *field.Field, logTail *LogTail, updater *update.Updater) *Web {
+	return &Web{field: field, logTail: logTail, updater: updater}
 }
 
 // Serves HTTP on an already-open listener and blocks forever. Taking a listener lets the caller know the port is bound
@@ -54,16 +56,22 @@ func (web *Web) newHandler() http.Handler {
 	mux.HandleFunc("GET /api/teams/{teamId}", web.teamGetHandler)
 	mux.HandleFunc("GET /api/settings", web.settingsGetHandler)
 	mux.HandleFunc("PUT /api/settings", web.settingsPutHandler)
+	mux.HandleFunc("POST /api/update", web.updatePostHandler)
 	return mux
 }
 
 type statusResponse struct {
 	field.Status
-	Log []string `json:"log"`
+	Log    []string      `json:"log"`
+	Update update.Status `json:"update"`
 }
 
 func (web *Web) statusHandler(w http.ResponseWriter, r *http.Request) {
-	writeJson(w, http.StatusOK, statusResponse{Status: web.field.Status(), Log: web.logTail.Lines()})
+	writeJson(
+		w,
+		http.StatusOK,
+		statusResponse{Status: web.field.Status(), Log: web.logTail.Lines(), Update: web.updater.Status()},
+	)
 }
 
 // Applies the posted assignment for all six stations. Responds 400 if the assignment was rejected before saving, 500
@@ -184,6 +192,34 @@ func (web *Web) settingsPutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.settingsGetHandler(w, r)
+}
+
+// Installs the available update and restarts into it. The install continues in the background and shows in the status
+// this responds with. Responds 409 while updating isn't safe (see updateBlocker), when there's nothing to install, or
+// when an install is already running.
+func (web *Web) updatePostHandler(w http.ResponseWriter, r *http.Request) {
+	if err := web.updateBlocker(); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if err := web.updater.Install(web.updateBlocker); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	web.statusHandler(w, r)
+}
+
+// Restarting drops every driver station and comes back with FMS off, and would cut a recording short, so updates wait
+// until both are off. Checked when an update starts and again right before the restart.
+func (web *Web) updateBlocker() error {
+	status := web.field.Status()
+	if status.DriverStationMode != field.DriverStationsOff {
+		return errors.New("turn FMS off to update")
+	}
+	if status.Recording.Active {
+		return errors.New("stop recording to update")
+	}
+	return nil
 }
 
 func writeJson(w http.ResponseWriter, status int, body any) {

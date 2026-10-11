@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"github.com/Team254/cheesy-arena/field"
 	"github.com/Team254/cheesy-arena/model"
+	"github.com/Team254/cheesy-arena/update"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
@@ -70,7 +71,9 @@ func TestTeamPageEndToEnd(t *testing.T) {
 	)
 	require.Nil(t, err)
 	go fieldController.Run()
-	admin := httptest.NewServer(NewWeb(fieldController, NewLogTail(200)).newHandler())
+	admin := httptest.NewServer(
+		NewWeb(fieldController, NewLogTail(200), update.New(update.Options{Current: "dev"})).newHandler(),
+	)
 	defer admin.Close()
 	team := NewTeamHandler(fieldController, recordingsDir)
 
