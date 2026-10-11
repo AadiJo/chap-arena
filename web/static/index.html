@@ -368,8 +368,9 @@ when the URL has ?demo, for previewing without field hardware.
       <div class="row"><label for="BlueSCCAddress">Blue address</label><input id="BlueSCCAddress" placeholder="10.0.100.49"></div>
       <div class="row"><label for="SCCUsername">Username</label><input id="SCCUsername" placeholder="admin"></div>
       <div class="row"><label for="SCCPassword">Password</label><input id="SCCPassword" type="password"></div>
-      <div class="row top"><label for="SCCUpCommands">Enable commands</label><textarea id="SCCUpCommands" rows="7"></textarea></div>
-      <div class="row top"><label for="SCCDownCommands">Disable commands</label><textarea id="SCCDownCommands" rows="7"></textarea></div>
+      <div class="row"><label for="SCCStation1Port">Station 1 port<small>Apply turns off only the ports of stations whose team changed, then turns them back on.</small></label><input id="SCCStation1Port" placeholder="gigabitEthernet 1/2" spellcheck="false"></div>
+      <div class="row"><label for="SCCStation2Port">Station 2 port</label><input id="SCCStation2Port" placeholder="gigabitEthernet 1/3" spellcheck="false"></div>
+      <div class="row"><label for="SCCStation3Port">Station 3 port</label><input id="SCCStation3Port" placeholder="gigabitEthernet 1/4" spellcheck="false"></div>
     </div>
     <div class="bar"><span id="settings-message"></span><button class="primary" id="save-settings">Save</button></div>
   </section>

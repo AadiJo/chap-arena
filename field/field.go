@@ -66,10 +66,15 @@ type Options struct {
 	NtAddress func(teamId int) string
 	// Recording sessions are created as folders in here.
 	RecordingsDir string
+	// Overrides for pointing the switch and SCCs at fakes in tests. Zero values mean the real hardware.
+	Switch      network.SwitchOptions
+	RedSCCPort  int
+	BlueSCCPort int
 }
 
 type Field struct {
 	database *model.Database
+	options  Options
 
 	// Guards everything below. The access point monitoring loop writes wifiStatuses and hardware Status strings
 	// without it, same as full Cheesy Arena.
@@ -111,11 +116,9 @@ func New(database *model.Database, options Options) (*Field, error) {
 	for _, team := range teams {
 		topics[team.Id] = team.NtTopics
 	}
-	if settings.RecordingFormat == "" {
-		settings.RecordingFormat = DefaultRecordingFormat
-	}
 	field := Field{
 		database:       database,
+		options:        options,
 		driverStations: newDriverStations(options.DriverStationPorts),
 		telemetry:      newTelemetry(options.NtAddress, options.RecordingsDir, topics),
 	}
@@ -132,7 +135,7 @@ func New(database *model.Database, options Options) (*Field, error) {
 			field.assignments[i].WpaKey = team.WpaKey
 		}
 	}
-	field.loadSettings(*settings)
+	field.loadSettings(withDefaults(*settings))
 	field.accessPoint.SetExpectedTeams(field.teams())
 	field.driverStations.setTeams(settings.StationTeamIds)
 	field.telemetry.setStations(settings.StationTeamIds)
@@ -151,18 +154,16 @@ func (field *Field) Settings() model.EventSettings {
 }
 
 // Saves the settings and rebuilds the hardware clients. It does not push anything to the hardware; the next apply (or
-// the AP monitoring loop) uses the new settings, and the next recording uses the new format. A blank recording format
-// means the default. Returns a ValidationError, saving nothing, if the default WPA key isn't a usable key or the
-// recording format is unknown.
+// the AP monitoring loop) uses the new settings, and the next recording uses the new format. Blank settings that have
+// defaults get them (see withDefaults). Returns a ValidationError, saving nothing, if the default WPA key isn't a usable
+// key or the recording format is unknown.
 func (field *Field) UpdateSettings(settings model.EventSettings) error {
 	if key := settings.DefaultWpaKey; key != "" && (len(key) < minWpaKeyLength || len(key) > maxWpaKeyLength) {
 		return ValidationError(
 			fmt.Sprintf("default password must be %d to %d characters", minWpaKeyLength, maxWpaKeyLength),
 		)
 	}
-	if settings.RecordingFormat == "" {
-		settings.RecordingFormat = DefaultRecordingFormat
-	}
+	settings = withDefaults(settings)
 	if !validRecordingFormat(settings.RecordingFormat) {
 		return ValidationError(fmt.Sprintf("unknown recording format %q", settings.RecordingFormat))
 	}
@@ -352,23 +353,39 @@ func (field *Field) Status() Status {
 	return status
 }
 
-// Rebuilds the hardware clients from the given settings. Caller must hold the mutex (or be constructing the field).
+// Rebuilds the hardware clients from the given settings. The switch is kept, along with what it knows it has
+// configured, unless its address or password changed. Caller must hold the mutex (or be constructing the field).
 func (field *Field) loadSettings(settings model.EventSettings) {
+	if field.networkSwitch == nil || settings.SwitchAddress != field.settings.SwitchAddress ||
+		settings.SwitchPassword != field.settings.SwitchPassword {
+		field.networkSwitch = network.NewSwitch(settings.SwitchAddress, settings.SwitchPassword, field.options.Switch)
+	}
 	field.settings = settings
 	wifiStatuses := [6]*network.TeamWifiStatus{}
 	for i := range field.wifiStatuses {
 		wifiStatuses[i] = &field.wifiStatuses[i]
 	}
 	field.accessPoint.SetSettings(settings.ApAddress, settings.ApPassword, settings.ApChannel, wifiStatuses)
-	field.networkSwitch = network.NewSwitch(settings.SwitchAddress, settings.SwitchPassword)
-	upCommands := strings.Split(settings.SCCUpCommands, "\n")
-	downCommands := strings.Split(settings.SCCDownCommands, "\n")
+	stationPorts := [3]string{settings.SCCStation1Port, settings.SCCStation2Port, settings.SCCStation3Port}
 	field.redSCC = network.NewSCCSwitch(
-		settings.RedSCCAddress, settings.SCCUsername, settings.SCCPassword, upCommands, downCommands,
+		settings.RedSCCAddress, field.options.RedSCCPort, settings.SCCUsername, settings.SCCPassword, stationPorts,
 	)
 	field.blueSCC = network.NewSCCSwitch(
-		settings.BlueSCCAddress, settings.SCCUsername, settings.SCCPassword, upCommands, downCommands,
+		settings.BlueSCCAddress, field.options.BlueSCCPort, settings.SCCUsername, settings.SCCPassword, stationPorts,
 	)
+}
+
+// Fills in settings left blank that have defaults: the recording format and the SCC station ports.
+func withDefaults(settings model.EventSettings) model.EventSettings {
+	if settings.RecordingFormat == "" {
+		settings.RecordingFormat = DefaultRecordingFormat
+	}
+	for i, port := range []*string{&settings.SCCStation1Port, &settings.SCCStation2Port, &settings.SCCStation3Port} {
+		if *port == "" {
+			*port = network.DefaultSCCStationPorts[i]
+		}
+	}
+	return settings
 }
 
 // Creates or updates the team's database record if its WPA key changed. Caller must hold the mutex.
@@ -398,8 +415,10 @@ func (field *Field) teams() [6]*model.Team {
 	return teams
 }
 
-// Reconfigures the switch VLANs for the current assignment, disabling SCC team ports while it does so. Waits for any
-// in-progress switch configuration first, then reads the latest assignment so a quick second apply isn't overwritten.
+// Reconfigures the switch VLANs for the current assignment, turning off the SCC ports of the same stations while it
+// does so. Only stations whose team changed since the switch was last configured are touched, so driver stations at
+// the others stay connected; a key-only change touches nothing. Waits for any in-progress switch configuration first,
+// then reads the latest assignment so a quick second apply isn't overwritten.
 func (field *Field) configureEthernet() {
 	field.switchMutex.Lock()
 	defer field.switchMutex.Unlock()
@@ -411,31 +430,36 @@ func (field *Field) configureEthernet() {
 	redSCC, blueSCC := field.redSCC, field.blueSCC
 	field.mutex.Unlock()
 
+	stations := networkSwitch.StationsToConfigure(teams)
+	if stations == [6]bool{} {
+		log.Printf("Switch already configured for stations %s", describeTeams(teams))
+		return
+	}
 	if sccEnabled {
-		setSCCEthernetEnabled(redSCC, blueSCC, false)
+		setSCCStationPortsEnabled(redSCC, blueSCC, stations, false)
 	}
 	if err := networkSwitch.ConfigureTeamEthernet(teams); err != nil {
 		log.Printf("Failed to configure team Ethernet: %v", err)
 	} else {
-		log.Printf("Switch configured for stations %s", describeTeams(teams))
+		log.Printf("Switch configured for stations %s (changed %s)", describeTeams(teams), describeStations(stations))
 	}
 	if sccEnabled {
-		setSCCEthernetEnabled(redSCC, blueSCC, true)
+		setSCCStationPortsEnabled(redSCC, blueSCC, stations, true)
 	}
 }
 
-// Enables or disables the team ethernet ports on both SCCs in parallel.
-func setSCCEthernetEnabled(redSCC, blueSCC *network.SCCSwitch, enabled bool) {
+// Turns the given stations' ports on both SCCs on or off in parallel. An SCC with none of them isn't contacted.
+func setSCCStationPortsEnabled(redSCC, blueSCC *network.SCCSwitch, stations [6]bool, enabled bool) {
 	var wg sync.WaitGroup
-	configureSCC := func(scc *network.SCCSwitch, name string) {
+	configureSCC := func(scc *network.SCCSwitch, name string, stations [3]bool) {
 		defer wg.Done()
-		if err := scc.SetTeamEthernetEnabled(enabled); err != nil {
-			log.Printf("Failed to set %s SCC enabled state to %t: %v", name, enabled, err)
+		if err := scc.SetStationPortsEnabled(stations, enabled); err != nil {
+			log.Printf("Failed to set %s SCC station ports enabled state to %t: %v", name, enabled, err)
 		}
 	}
 	wg.Add(2)
-	go configureSCC(redSCC, "red")
-	go configureSCC(blueSCC, "blue")
+	go configureSCC(redSCC, "red", [3]bool(stations[:3]))
+	go configureSCC(blueSCC, "blue", [3]bool(stations[3:]))
 	wg.Wait()
 }
 
@@ -460,6 +484,17 @@ func validateAssignments(assignments [6]Assignment) error {
 		}
 	}
 	return nil
+}
+
+// Formats the selected stations as "R3 B1" for the log.
+func describeStations(stations [6]bool) string {
+	var names []string
+	for i, selected := range stations {
+		if selected {
+			names = append(names, StationNames[i])
+		}
+	}
+	return strings.Join(names, " ")
 }
 
 // Formats teams as "R1=254 R2=- ..." for the log.

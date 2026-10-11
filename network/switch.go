@@ -33,6 +33,9 @@ const (
 	blue3Vlan = 60
 )
 
+// VLAN for each station, in station order.
+var teamVlans = [6]int{red1Vlan, red2Vlan, red3Vlan, blue1Vlan, blue2Vlan, blue3Vlan}
+
 type Switch struct {
 	address               string
 	port                  int
@@ -41,10 +44,22 @@ type Switch struct {
 	configBackoffDuration time.Duration
 	configPauseDuration   time.Duration
 	Status                string
+
+	// Team on each station's VLAN (0 for none) as of the last successful configuration. Until one succeeds, and again
+	// after one fails, configured is false and the next configuration rewrites every VLAN.
+	configuredTeamIds [6]int
+	configured        bool
 }
 
-func NewSwitch(address, password string) *Switch {
-	return &Switch{
+// Overrides for pointing a Switch at a fake in tests. Zero values mean the real switch's Telnet port and waits.
+type SwitchOptions struct {
+	Port            int
+	PauseDuration   time.Duration // Between removing old VLANs and adding new ones.
+	BackoffDuration time.Duration // After adding them, before another configuration can start.
+}
+
+func NewSwitch(address, password string, options SwitchOptions) *Switch {
+	sw := &Switch{
 		address:               address,
 		port:                  switchTelnetPort,
 		password:              password,
@@ -52,21 +67,47 @@ func NewSwitch(address, password string) *Switch {
 		configPauseDuration:   switchConfigPauseDurationSec * time.Second,
 		Status:                "UNKNOWN",
 	}
+	if options.Port != 0 {
+		sw.port = options.Port
+	}
+	if options.PauseDuration != 0 {
+		sw.configPauseDuration = options.PauseDuration
+	}
+	if options.BackoffDuration != 0 {
+		sw.configBackoffDuration = options.BackoffDuration
+	}
+	return sw
 }
 
-// Sets up wired networks for the given set of teams.
+// Returns which stations' VLANs ConfigureTeamEthernet would rewrite for the given teams: those whose team changed since
+// the last successful configuration, or all six if there hasn't been one.
+func (sw *Switch) StationsToConfigure(teams [6]*model.Team) [6]bool {
+	sw.mutex.Lock()
+	defer sw.mutex.Unlock()
+	return sw.stationsToConfigure(teams)
+}
+
+// Sets up wired networks for the given set of teams. Only the VLANs of stations returned by StationsToConfigure are
+// rewritten, so driver stations at the other stations keep their gateway. Does nothing if no station changed.
 func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 	// Make sure multiple configurations aren't being set at the same time.
 	sw.mutex.Lock()
 	defer sw.mutex.Unlock()
+	stations := sw.stationsToConfigure(teams)
+	if stations == [6]bool{} {
+		return nil
+	}
 	sw.Status = "CONFIGURING"
+	sw.configured = false
 
-	// Remove old team VLANs to reset the switch state.
+	// Remove the changed stations' old team VLANs.
 	removeTeamVlansCommand := ""
-	for vlan := 10; vlan <= 60; vlan += 10 {
-		removeTeamVlansCommand += fmt.Sprintf(
-			"interface Vlan%d\nno ip address\nno ip dhcp pool dhcp%d\n", vlan, vlan,
-		)
+	for i, vlan := range teamVlans {
+		if stations[i] {
+			removeTeamVlansCommand += fmt.Sprintf(
+				"interface Vlan%d\nno ip address\nno ip dhcp pool dhcp%d\n", vlan, vlan,
+			)
+		}
 	}
 	_, err := sw.runConfigCommand(removeTeamVlansCommand)
 	if err != nil {
@@ -111,12 +152,11 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 			switchTeamGatewayAddress,
 		)
 	}
-	addTeamVlan(teams[0], red1Vlan)
-	addTeamVlan(teams[1], red2Vlan)
-	addTeamVlan(teams[2], red3Vlan)
-	addTeamVlan(teams[3], blue1Vlan)
-	addTeamVlan(teams[4], blue2Vlan)
-	addTeamVlan(teams[5], blue3Vlan)
+	for i, vlan := range teamVlans {
+		if stations[i] {
+			addTeamVlan(teams[i], vlan)
+		}
+	}
 	if len(addTeamVlansCommand) > 0 {
 		_, err = sw.runConfigCommand(addTeamVlansCommand)
 		if err != nil {
@@ -128,8 +168,30 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 	// Give some time for the configuration to take before another one can be attempted.
 	time.Sleep(sw.configBackoffDuration)
 
+	sw.configuredTeamIds = teamIds(teams)
+	sw.configured = true
 	sw.Status = "ACTIVE"
 	return nil
+}
+
+// Caller must hold the mutex.
+func (sw *Switch) stationsToConfigure(teams [6]*model.Team) [6]bool {
+	var stations [6]bool
+	ids := teamIds(teams)
+	for i := range stations {
+		stations[i] = !sw.configured || sw.configuredTeamIds[i] != ids[i]
+	}
+	return stations
+}
+
+func teamIds(teams [6]*model.Team) [6]int {
+	var ids [6]int
+	for i, team := range teams {
+		if team != nil {
+			ids[i] = team.Id
+		}
+	}
+	return ids
 }
 
 // Logs into the switch via Telnet and runs the given command in user exec mode. Reads the output and

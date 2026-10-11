@@ -13,12 +13,17 @@ import (
 	"time"
 )
 
+// Each case is a switch's first configuration, which rewrites every VLAN. Later configurations only rewrite the VLANs of
+// stations whose team changed; web/ethernet_e2e_test.go covers those.
 func TestConfigureSwitch(t *testing.T) {
-	sw := NewSwitch("127.0.0.1", "password")
+	newSwitch := func(port int) *Switch {
+		return NewSwitch(
+			"127.0.0.1", "password",
+			SwitchOptions{Port: port, PauseDuration: time.Millisecond, BackoffDuration: time.Millisecond},
+		)
+	}
+	sw := newSwitch(9050)
 	assert.Equal(t, "UNKNOWN", sw.Status)
-	sw.port = 9050
-	sw.configBackoffDuration = time.Millisecond
-	sw.configPauseDuration = time.Millisecond
 	var command1, command2 string
 	expectedResetCommand := "password\nenable\npassword\nterminal length 0\nconfig terminal\n" +
 		"interface Vlan10\nno ip address\nno ip dhcp pool dhcp10\n" +
@@ -37,7 +42,7 @@ func TestConfigureSwitch(t *testing.T) {
 	assert.Equal(t, "ACTIVE", sw.Status)
 
 	// Should configure one team if only one is present.
-	sw.port += 1
+	sw = newSwitch(9051)
 	mockTelnet(t, sw.port, &command1, &command2)
 	assert.Nil(t, sw.ConfigureTeamEthernet([6]*model.Team{nil, nil, nil, nil, {Id: 254}, nil}))
 	assert.Equal(t, expectedResetCommand, command1)
@@ -53,7 +58,7 @@ func TestConfigureSwitch(t *testing.T) {
 	)
 
 	// Should configure all teams if all are present.
-	sw.port += 1
+	sw = newSwitch(9052)
 	mockTelnet(t, sw.port, &command1, &command2)
 	assert.Nil(
 		t,

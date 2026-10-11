@@ -41,8 +41,18 @@ type EventSettings struct {
 	BlueSCCAddress       string
 	SCCUsername          string
 	SCCPassword          string
-	SCCUpCommands        string
-	SCCDownCommands      string
+
+	// Full Cheesy Arena's commands for turning every team port on an SCC on and off. Chap Arena turns off only the ports
+	// of stations being changed, using the SCCStation ports below, so these are unused here. They're kept so a database
+	// created here still works in full Cheesy Arena.
+	SCCUpCommands   string
+	SCCDownCommands string
+
+	// Interface each driver station plugs into on its alliance's SCC, for stations 1 to 3. Blank means the matching
+	// network.DefaultSCCStationPorts entry.
+	SCCStation1Port string
+	SCCStation2Port string
+	SCCStation3Port string
 
 	// Used for any assigned station whose WPA key is left blank. Empty means there is no default.
 	DefaultWpaKey string

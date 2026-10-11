@@ -6,54 +6,48 @@ package network
 import (
 	"bytes"
 	"fmt"
+	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/ed25519"
+	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"golang.org/x/crypto/ed25519"
-	"golang.org/x/crypto/ssh"
 )
 
 func TestConfigureSCC(t *testing.T) {
 	username := "username"
 	password := "password"
-	upCommands := []string{
-		"up_line1",
-		"up line 2",
-		"up-line/3",
-		"up line 4",
-		"up line 5",
-		"exit",
-	}
-	downCommands := []string{
-		"down_line1",
-		"down line 2",
-		"down-line/3",
-		"down line 4",
-		"down line 5",
-		"exit",
-	}
-	scc := NewSCCSwitch("127.0.0.1", username, password, upCommands, downCommands)
-	scc.port = 9150
+	scc := NewSCCSwitch("127.0.0.1", 9150, username, password, [3]string{"gi 1/2", "gi 1/3", "gi 1/4"})
 	scc.connectTimeoutDuration = 10 * time.Millisecond
 	scc.configTimeoutDuration = 15 * time.Millisecond
 
 	var receivedUpCommands, receivedDownCommands []string
 
-	// Set the switch to the down state
+	// Turn off stations 1 and 3's ports
 	mockSSHSwitch(t, scc.port, username, password, &receivedDownCommands)
-	assert.Nil(t, scc.SetTeamEthernetEnabled(false))
-	assert.Equal(t, downCommands, receivedDownCommands)
+	assert.Nil(t, scc.SetStationPortsEnabled([3]bool{true, false, true}, false))
+	assert.Equal(
+		t,
+		[]string{"configure terminal", "interface gi 1/2", "shutdown", "exit", "interface gi 1/4", "shutdown", "exit",
+			"exit", "exit"},
+		receivedDownCommands,
+	)
 	assert.Equal(t, "DISABLED", scc.Status)
 
-	// Set the switch to the up state
+	// Turn station 3's port back on
 	scc.port += 1
 	mockSSHSwitch(t, scc.port, username, password, &receivedUpCommands)
-	assert.Nil(t, scc.SetTeamEthernetEnabled(true))
-	assert.Equal(t, upCommands, receivedUpCommands)
+	assert.Nil(t, scc.SetStationPortsEnabled([3]bool{false, false, true}, true))
+	assert.Equal(
+		t, []string{"configure terminal", "interface gi 1/4", "no shutdown", "exit", "exit", "exit"}, receivedUpCommands,
+	)
+	assert.Equal(t, "ACTIVE", scc.Status)
+
+	// No stations means no connection at all; nothing is listening on the next port.
+	scc.port += 1
+	assert.Nil(t, scc.SetStationPortsEnabled([3]bool{}, false))
 	assert.Equal(t, "ACTIVE", scc.Status)
 }
 

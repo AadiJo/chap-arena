@@ -3,11 +3,11 @@
 // the first poll.
 //
 // Replaces fetch for /api/* with an in-browser fake of web.go and team.go that never touches the server (downloads
-// still go to it). Apply plays the same
-// sequence as field.Apply: the AP goes CONFIGURING then ACTIVE, the switch configures in the background, and each
-// assigned radio shows "no link" until it associates and links a few seconds later. Settings and WPA keys live in
-// memory and reset on reload. Validation messages match field.validateAssignments and field.UpdateSettings, and a blank
-// key on an assigned station gets the default WPA key, as in field.Apply.
+// still go to it). Apply plays the same sequence as field.Apply: the AP goes CONFIGURING then ACTIVE, the switch
+// configures the stations whose team changed in the background, and each assigned radio shows "no link" until it
+// associates and links a few seconds later. Settings and WPA keys live in memory and reset on reload. Validation messages
+// match field.validateAssignments and field.UpdateSettings, and a blank key on an assigned station gets the default WPA
+// key, as in field.Apply.
 //
 // FMS mode follows field/driver_station.go: it starts off; turning it on has driver stations connect one by one (B2's
 // never does, and R3's connects late enough to show a robot that missed Enable); Enabled enables whatever is connected;
@@ -99,8 +99,8 @@
   let settings = {
     ApAddress: "10.0.100.2", ApPassword: "", ApChannel: 37, SwitchAddress: "10.0.100.3", SwitchPassword: "",
     SCCManagementEnabled: false, RedSCCAddress: "10.0.100.48", BlueSCCAddress: "10.0.100.49", SCCUsername: "admin",
-    SCCPassword: "", SCCUpCommands: "configure terminal\ninterface range gigabitEthernet 1/2-4\nno shutdown\nexit\nexit\nexit",
-    SCCDownCommands: "configure terminal\ninterface range gigabitEthernet 1/2-4\nshutdown\nexit\nexit\nexit",
+    SCCPassword: "", SCCStation1Port: "gigabitEthernet 1/2", SCCStation2Port: "gigabitEthernet 1/3",
+    SCCStation3Port: "gigabitEthernet 1/4",
     DefaultWpaKey: "", RecordingFormat: "wpilog",
   };
 
@@ -187,6 +187,8 @@
     if (error) return [400, { error }];
 
     generation++;
+    // Like the real switch, only stations whose team changed get reconfigured.
+    const changed = stationNames.filter((_, i) => (assignments[i].teamId || 0) !== (state.stations[i].assignment.teamId || 0));
     assignments.forEach((assignment, i) => {
       const teamId = assignment.teamId;
       if (teamId) wpaKeys.set(teamId, assignment.wpaKey);
@@ -202,8 +204,9 @@
     });
     state.lastApplied = new Date().toISOString();
     state.accessPointStatus = "CONFIGURING";
-    state.switchStatus = "CONFIGURING";
+    if (changed.length) state.switchStatus = "CONFIGURING";
     log(`Applying stations ${describeTeams()}`);
+    if (!changed.length) log(`Switch already configured for stations ${describeTeams()}`);
 
     later(2500, () => {
       state.accessPointStatus = "ACTIVE";
@@ -219,10 +222,12 @@
     state.stations.forEach((station, i) => {
       if (!station.driverStation.connected) later(2500 + linkDelays[i], () => connectLater(i));
     });
-    later(4500, () => {
-      state.switchStatus = "ACTIVE";
-      log(`Switch configured for stations ${describeTeams()}`);
-    });
+    if (changed.length) {
+      later(4500, () => {
+        state.switchStatus = "ACTIVE";
+        log(`Switch configured for stations ${describeTeams()} (changed ${changed.join(" ")})`);
+      });
+    }
     return [200, state];
   }
 

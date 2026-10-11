@@ -1,19 +1,18 @@
 // Copyright 2025 Team 254. All Rights Reserved.
 // Author: pat@patfairbank.com (Patrick Fairbank)
 //
-// Methods for configuring an SCC Switch via SSH.
+// Methods for turning the driver station ports on an SCC switch on and off via SSH.
 
 package network
 
 import (
 	"bytes"
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"net"
 	"strconv"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -21,6 +20,9 @@ const (
 	sccSwitchConfigTimeoutSec  = 5
 	sccSwitchSSHPort           = 22
 )
+
+// Interfaces that driver stations 1 to 3 plug into on each alliance's SCC, for any left blank in settings.
+var DefaultSCCStationPorts = [3]string{"gigabitEthernet 1/2", "gigabitEthernet 1/3", "gigabitEthernet 1/4"}
 
 type SCCSwitch struct {
 	address                string
@@ -30,40 +32,56 @@ type SCCSwitch struct {
 	mutex                  sync.Mutex
 	connectTimeoutDuration time.Duration
 	configTimeoutDuration  time.Duration
-	upCommands             []string
-	downCommands           []string
+	stationPorts           [3]string
 	Status                 string
 }
 
-func NewSCCSwitch(address, username, password string, upCommands, downCommands []string) *SCCSwitch {
+// Port 0 means the standard SSH port; tests point it at a fake. stationPorts are the interfaces stations 1 to 3 plug
+// into.
+func NewSCCSwitch(address string, port int, username, password string, stationPorts [3]string) *SCCSwitch {
+	if port == 0 {
+		port = sccSwitchSSHPort
+	}
 	return &SCCSwitch{
 		address:                address,
-		port:                   sccSwitchSSHPort,
+		port:                   port,
 		username:               username,
 		password:               password,
 		connectTimeoutDuration: sccSwitchConnectTimeoutSec * time.Second,
 		configTimeoutDuration:  sccSwitchConfigTimeoutSec * time.Second,
-		upCommands:             upCommands,
-		downCommands:           downCommands,
+		stationPorts:           stationPorts,
 		Status:                 "UNKNOWN",
 	}
 }
 
-func (scc *SCCSwitch) SetTeamEthernetEnabled(enabled bool) error {
+// Turns the ports of the given stations (1 to 3, in order) on or off, leaving the others alone. Turning a port off and
+// back on makes the driver station plugged into it get a new DHCP lease, which it needs once its station's team, and so
+// its subnet, changes. Does nothing if no station is given.
+func (scc *SCCSwitch) SetStationPortsEnabled(stations [3]bool, enabled bool) error {
+	if stations == [3]bool{} {
+		return nil
+	}
 	scc.mutex.Lock()
 	defer scc.mutex.Unlock()
 
 	scc.Status = "CONFIGURING"
 
-	commandSequence := scc.downCommands
+	portCommand := "shutdown"
 	if enabled {
-		commandSequence = scc.upCommands
+		portCommand = "no shutdown"
 	}
+	commandSequence := []string{"configure terminal"}
+	for i, selected := range stations {
+		if selected {
+			commandSequence = append(commandSequence, "interface "+scc.stationPorts[i], portCommand, "exit")
+		}
+	}
+	commandSequence = append(commandSequence, "exit", "exit")
 
 	_, err := scc.runCommandSequence(commandSequence)
 	if err != nil {
 		scc.Status = "ERROR"
-		return fmt.Errorf("failed to set team ethernet state: %w", err)
+		return fmt.Errorf("failed to set station port state: %w", err)
 	}
 
 	if enabled {

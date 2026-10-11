@@ -47,8 +47,8 @@ const qualityNames = ["-", "caution", "warning", "good", "excellent"];
 const qualityStates = ["dim", "bad", "warn", "ok", "ok"];
 const settingsFields = [
   "ApAddress", "ApPassword", "ApChannel", "SwitchAddress", "SwitchPassword", "SCCManagementEnabled",
-  "RedSCCAddress", "BlueSCCAddress", "SCCUsername", "SCCPassword", "SCCUpCommands", "SCCDownCommands", "DefaultWpaKey",
-  "RecordingFormat",
+  "RedSCCAddress", "BlueSCCAddress", "SCCUsername", "SCCPassword", "SCCStation1Port", "SCCStation2Port",
+  "SCCStation3Port", "DefaultWpaKey", "RecordingFormat",
 ];
 // Last status from the server; its assignments are what the inputs are compared against for dirty state.
 let lastStatus = null;
