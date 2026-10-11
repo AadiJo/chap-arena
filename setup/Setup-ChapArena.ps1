@@ -140,7 +140,7 @@ function Get-ArenaUrl([string]$Arguments) {
 }
 
 # Flags for running from this folder: the same as before, minus -db so the database is the one here, and with
-# -recordings-port renamed to -team-port, its name since v0.8.0.
+# -recordings-port renamed to its newer name, -team-port.
 function Convert-Arguments([string]$Arguments) {
     $converted = $Arguments -replace '(?:^|\s)--?db(?:=|\s+)(?:"[^"]+"|\S+)', ''
     $converted = $converted -replace '(^|\s)(--?)recordings-port\b', '$1$2team-port'

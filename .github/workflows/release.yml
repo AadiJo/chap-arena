@@ -13,7 +13,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below. Unzip it and run the binary; it opens the web UI in your browser. The web UI is built into the binary, so it can be run from anywhere. On Windows, unzip it where Chap Arena should live and run Setup-ChapArena.cmd: it moves an existing Chap Arena into that folder and patches a Vivid-Hosting access point so applying one station leaves the others connected."
+        run: gh release create "$GITHUB_REF_NAME" --title "Chap Arena $GITHUB_REF_NAME" --notes "Download the build for your operating system below. Unzip it and run the binary; it opens the web UI in your browser. The web UI is built into the binary, so it can be run from anywhere. On Windows, unzip it where Chap Arena should live and run Setup-ChapArena.cmd, which moves an existing Chap Arena into that folder and patches a Vivid-Hosting access point so applying one station leaves the others connected."
 
   bundle:
     needs: create
