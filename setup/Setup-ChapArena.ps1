@@ -27,7 +27,8 @@ $PatchedApi = Join-Path $Here 'frc-radio-api'
 $BackupDir = Join-Path $Here 'backup'
 $OldInstallFile = Join-Path $BackupDir 'old-install.json'
 $StockApiBackup = Join-Path $BackupDir 'frc-radio-api.stock'
-$ApKey = Join-Path $env:USERPROFILE '.ssh\chap-arena-ap'
+# RSA, since the AP's old SSH server may not take newer key types. See Get-SshArgs.
+$ApKey = Join-Path $env:USERPROFILE '.ssh\chap-arena-ap-rsa'
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Wizard library, after the /wizard skill's template: one stage per screen, progress, confirmations, a closing summary.
@@ -100,18 +101,30 @@ function Finish([string]$Title, [string]$LogPath) {
 # Chap Arena: finding it, moving it into this folder, starting and stopping it.
 # ---------------------------------------------------------------------------------------------------------------------
 
-# Runs a program and returns its output lines (stdout and stderr) and exit code. Windows PowerShell turns a program's
-# stderr into errors, so error handling is relaxed while it runs.
+# Quotes arguments into one Windows command line, the way the C runtime splits it back up: arguments with spaces or
+# double quotes go in double quotes, with the backslashes before a quote (or the end) doubled.
+function ConvertTo-CommandLine([string[]]$Arguments) {
+    ($Arguments | ForEach-Object {
+        if ($_ -ne '' -and $_ -notmatch '[\s"]') { $_ }
+        else { '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"' }
+    }) -join ' '
+}
+
+# Runs a program and returns its exit code, its standard output lines (Output), and those followed by its standard
+# error lines (Lines, and joined as Text). The output goes through temp files, not pipes: Windows' ssh.exe doesn't exit
+# while PowerShell reads its output through a pipe, even once the remote command has finished.
 function Invoke-Program([string]$File, [string[]]$Arguments) {
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    $outFile = [IO.Path]::GetTempFileName()
+    $errFile = [IO.Path]::GetTempFileName()
     try {
-        $lines = @(& $File @Arguments 2>&1 | ForEach-Object { "$_" })
-        $code = $LASTEXITCODE
+        $process = Start-Process -FilePath $File -ArgumentList (ConvertTo-CommandLine $Arguments) -NoNewWindow -Wait `
+            -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $output = @(Get-Content -LiteralPath $outFile)
+        $lines = $output + @(Get-Content -LiteralPath $errFile)
+        return [pscustomobject]@{ Output = $output; Lines = $lines; ExitCode = $process.ExitCode; Text = ($lines -join "`n") }
     } finally {
-        $ErrorActionPreference = $previous
+        Remove-Item -LiteralPath $outFile, $errFile -ErrorAction SilentlyContinue
     }
-    return [pscustomobject]@{ Lines = $lines; ExitCode = $code; Text = ($lines -join "`n") }
 }
 
 function Get-Sha256([string]$Path) { (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower() }
@@ -412,11 +425,20 @@ function Initialize-Ssh {
     Ok "SSH is installed ($sshVersion)."
 }
 
-function Get-SshArgs { @('-i', $ApKey, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new') }
+# The VH-113's SSH server (an old Dropbear) only offers an ssh-rsa host key and only checks ssh-rsa signatures, which
+# OpenSSH 8.8 and later turn off by default, so they're turned back on for the AP. PubkeyAcceptedKeyTypes is the older
+# name of PubkeyAcceptedAlgorithms, which every OpenSSH from 7.0 on still accepts.
+function Get-LegacyAlgorithmArgs { @('-o', 'HostKeyAlgorithms=+ssh-rsa', '-o', 'PubkeyAcceptedKeyTypes=+ssh-rsa') }
+
+function Get-SshArgs {
+    @('-i', $ApKey, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new') +
+        (Get-LegacyAlgorithmArgs)
+}
 
 # Runs a shell command on the AP as root with this PC's key. Commands avoid double quotes, which Windows PowerShell
-# mangles when passing arguments to programs.
-function Invoke-AP([string]$Command) { Invoke-Program 'ssh' ((Get-SshArgs) + @("root@$($script:ApHost)", $Command)) }
+# mangles when passing arguments to programs. -n gives ssh no input: none of the commands read any, and Windows' ssh can
+# otherwise wait on input after the command has finished.
+function Invoke-AP([string]$Command) { Invoke-Program 'ssh' ((Get-SshArgs) + @('-n', "root@$($script:ApHost)", $Command)) }
 
 function Copy-ToAP([string]$Local, [string]$Remote) {
     Invoke-Program 'scp' ($script:ScpArgs + (Get-SshArgs) + @($Local, "root@$($script:ApHost):$Remote"))
@@ -449,7 +471,7 @@ function Connect-AP {
     if (-not (Test-Path -LiteralPath $ApKey)) {
         New-Item -ItemType Directory -Force -Path (Split-Path $ApKey) | Out-Null
         Start-Process -FilePath 'ssh-keygen' -NoNewWindow -Wait `
-            -ArgumentList "-t ed25519 -N `"`" -q -C chap-arena-field-pc -f `"$ApKey`""
+            -ArgumentList "-t rsa -b 2048 -N `"`" -q -C chap-arena-field-pc -f `"$ApKey`""
     }
     if ((Invoke-AP 'echo ready').ExitCode -eq 0) {
         Ok 'Logged in to the AP with this PC''s key.'
@@ -463,10 +485,9 @@ function Connect-AP {
     $publicKey = (Get-Content -LiteralPath "$ApKey.pub" -Raw).Trim()
     $install = "mkdir -p /etc/dropbear /root/.ssh && for f in /etc/dropbear/authorized_keys /root/.ssh/authorized_keys; " +
         "do touch `$f; grep -qF '$publicKey' `$f || echo '$publicKey' >> `$f; chmod 600 `$f; done"
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    & ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "root@$($script:ApHost)" $install
-    $ErrorActionPreference = $previous
+    $arguments = @('-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new') + (Get-LegacyAlgorithmArgs) +
+        @("root@$($script:ApHost)", $install)
+    Start-Process -FilePath 'ssh' -ArgumentList (ConvertTo-CommandLine $arguments) -NoNewWindow -Wait
 
     $probe = Invoke-AP 'echo ready'
     if ($probe.ExitCode -eq 0) {
@@ -499,7 +520,7 @@ function Get-ApFacts {
         'echo sha256=$(sha256sum /usr/bin/frc-radio-api 2>/dev/null | cut -d '' '' -f1)'
     ) -join '; '
     $facts = @{}
-    foreach ($line in (Invoke-AP $command).Lines) {
+    foreach ($line in (Invoke-AP $command).Output) {
         if ($line -match '^(\w+)=(.*)$') { $facts[$Matches[1]] = $Matches[2].Trim() }
     }
     return $facts
@@ -508,7 +529,7 @@ function Get-ApFacts {
 # Checks that a file uploaded to the AP matches the local one, by SHA-256 or, without sha256sum, by size.
 function Test-ApCopy([string]$Remote, [string]$Local) {
     $result = Invoke-AP "sha256sum $Remote 2>/dev/null | cut -d ' ' -f1; wc -c < $Remote"
-    $lines = @($result.Lines | Where-Object { $_ })
+    $lines = @($result.Output | Where-Object { $_ })
     if ($lines.Count -ge 2) { return ($lines[0] -eq (Get-Sha256 $Local)) }
     if ($lines.Count -eq 1) { return ([int64]$lines[0].Trim() -eq (Get-Item -LiteralPath $Local).Length) }
     return $false
@@ -558,7 +579,7 @@ function Restore-ApApi {
 # request lines, which hold WPA keys.
 function Show-ApLog {
     $pattern = 'Configured Wi-Fi by restarting|reloading all of Wi-Fi|Couldn.t restart|Successfully configured Wi-Fi|Wi-Fi configuration'
-    $lines = @((Invoke-AP "grep -E '$pattern' /root/frc-radio-api.log | tail -n 8").Lines)
+    $lines = @((Invoke-AP "grep -E '$pattern' /root/frc-radio-api.log | tail -n 8").Output)
     if (-not $lines) {
         Note 'The AP''s radio API log has nothing about configuring Wi-Fi yet.'
         return
