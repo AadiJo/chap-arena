@@ -1,0 +1,353 @@
+Building configuration...
+
+Current configuration : 8588 bytes
+!
+version 12.2
+no service pad
+service timestamps debug datetime msec
+service timestamps log datetime msec
+no service password-encryption
+!
+hostname ChezySwitch
+!
+boot-start-marker
+boot-end-marker
+!
+enable secret 5 $1$kKSW$fCMwnMdYvXui1TulfyYHN/
+!
+!
+!
+no aaa new-model
+system mtu routing 1500
+ip routing
+ip dhcp excluded-address 10.0.100.1 10.0.100.125
+ip dhcp excluded-address 10.0.100.200 10.0.100.225
+ip dhcp excluded-address 10.99.97.1 10.99.97.19
+ip dhcp excluded-address 10.99.97.200 10.99.97.254
+ip dhcp excluded-address 10.26.89.1 10.26.89.19
+ip dhcp excluded-address 10.26.89.200 10.26.89.254
+ip dhcp excluded-address 10.99.99.1 10.99.99.19
+ip dhcp excluded-address 10.99.99.200 10.99.99.254
+ip dhcp excluded-address 10.99.98.1 10.99.98.19
+ip dhcp excluded-address 10.99.98.200 10.99.98.254
+ip dhcp excluded-address 10.26.87.1 10.26.87.19
+ip dhcp excluded-address 10.26.87.200 10.26.87.254
+ip dhcp excluded-address 10.24.68.1 10.24.68.19
+ip dhcp excluded-address 10.24.68.200 10.24.68.254
+ip dhcp excluded-address 10.12.34.1 10.12.34.19
+ip dhcp excluded-address 10.12.34.200 10.12.34.254
+ip dhcp excluded-address 10.34.56.1 10.34.56.19
+ip dhcp excluded-address 10.34.56.200 10.34.56.254
+ip dhcp excluded-address 10.24.67.1 10.24.67.19
+ip dhcp excluded-address 10.24.67.200 10.24.67.254
+ip dhcp excluded-address 10.23.45.1 10.23.45.19
+ip dhcp excluded-address 10.23.45.200 10.23.45.254
+!
+ip dhcp pool dhcppool
+   network 10.0.100.0 255.255.255.0
+   domain-name team254.com
+   dns-server 8.8.8.8 8.8.4.4 
+   default-router 10.0.100.3 
+   lease 7
+!
+ip dhcp pool dhcp20
+   network 10.26.87.0 255.255.255.0
+   default-router 10.26.87.4 
+   lease 7
+!
+!
+!
+!
+crypto pki trustpoint TP-self-signed-3094574464
+ enrollment selfsigned
+ subject-name cn=IOS-Self-Signed-Certificate-3094574464
+ revocation-check none
+ rsakeypair TP-self-signed-3094574464
+!
+!
+crypto pki certificate chain TP-self-signed-3094574464
+ certificate self-signed 01
+  30820244 308201AD A0030201 02020101 300D0609 2A864886 F70D0101 04050030 
+  31312F30 2D060355 04031326 494F532D 53656C66 2D536967 6E65642D 43657274 
+  69666963 6174652D 33303934 35373434 3634301E 170D3933 30333031 30303032 
+  35315A17 0D323030 31303130 30303030 305A3031 312F302D 06035504 03132649 
+  4F532D53 656C662D 5369676E 65642D43 65727469 66696361 74652D33 30393435 
+  37343436 3430819F 300D0609 2A864886 F70D0101 01050003 818D0030 81890281 
+  81009472 3E8C51B4 A4734664 0E7F3B97 43C5A1E7 F3E41AB8 5ED652A6 6E43E3B8 
+  AC249F46 B0541F47 71B4FB5E FA6CEC81 B77F1F64 0FB1F67D 1D321692 E2CFB5A3 
+  4BEEB43D 2A1FC048 DD291D47 B562C47F 5E5B963D F60DA907 888FEAE1 8796C573 
+  10AD6C3A 790EF3E6 AC0C8440 26271F81 306C710B D798873E E5D4BB7E A1E0C745 
+  9C9F0203 010001A3 6C306A30 0F060355 1D130101 FF040530 030101FF 30170603 
+  551D1104 10300E82 0C436865 7A795377 69746368 2E301F06 03551D23 04183016 
+  8014A0A7 1EF24F7F 25DAFE94 F89DF70D 3B5D5989 D50E301D 0603551D 0E041604 
+  14A0A71E F24F7F25 DAFE94F8 9DF70D3B 5D5989D5 0E300D06 092A8648 86F70D01 
+  01040500 03818100 3D359E46 9B6F0D00 8889F298 1A4D7775 1E454B56 CF5CBB9B 
+  DF187411 6C3DD308 69AAB916 F16646DE 20BD7F59 63D933E4 2DD9EDEC 83335F39 
+  45D8C238 80380B6B 7FCFDEE3 DCC5DD27 ACE4BA45 C97B20AE 5CE3A807 181373E1 
+  5A433C45 7D43CFF6 BD5D9363 69E00CA8 0A83DDB0 D9127D27 7A3451B0 87AC13BD 
+  CF618155 3F5F4E35
+  quit
+!
+!
+!
+spanning-tree mode pvst
+spanning-tree portfast default
+spanning-tree extend system-id
+!
+vlan internal allocation policy ascending
+lldp run
+!
+!
+!
+!
+interface GigabitEthernet0/1
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport trunk allowed vlan 10,20,30,100
+ switchport mode trunk
+!
+interface GigabitEthernet0/2
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport trunk allowed vlan 10,20,30,100
+ switchport mode trunk
+!
+interface GigabitEthernet0/3
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport trunk allowed vlan 40,50,60,100
+ switchport mode trunk
+!
+interface GigabitEthernet0/4
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport trunk allowed vlan 40,50,60,100
+ switchport mode trunk
+!
+interface GigabitEthernet0/5
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport mode trunk
+!
+interface GigabitEthernet0/6
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 100
+ switchport mode trunk
+!
+interface GigabitEthernet0/7
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/8
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/9
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/10
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/11
+ switchport access vlan 10
+ switchport mode access
+!
+interface GigabitEthernet0/12
+ switchport access vlan 40
+ switchport mode access
+!
+interface GigabitEthernet0/13
+ switchport access vlan 20
+ switchport mode access
+!
+interface GigabitEthernet0/14
+ switchport access vlan 50
+ switchport mode access
+!
+interface GigabitEthernet0/15
+ switchport access vlan 30
+ switchport mode access
+!
+interface GigabitEthernet0/16
+ switchport access vlan 60
+ switchport mode access
+!
+interface GigabitEthernet0/17
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/18
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/19
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/20
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/21
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/22
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/23
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/24
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/25
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/26
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/27
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/28
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/29
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/30
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/31
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/32
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/33
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/34
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/35
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/36
+!
+interface GigabitEthernet0/37
+!
+interface GigabitEthernet0/38
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/39
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/40
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/41
+!
+interface GigabitEthernet0/42
+!
+interface GigabitEthernet0/43
+!
+interface GigabitEthernet0/44
+!
+interface GigabitEthernet0/45
+!
+interface GigabitEthernet0/46
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/47
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/48
+ switchport access vlan 100
+ switchport mode access
+!
+interface GigabitEthernet0/49
+!
+interface GigabitEthernet0/50
+!
+interface GigabitEthernet0/51
+!
+interface GigabitEthernet0/52
+ switchport access vlan 100
+ switchport mode access
+!
+interface Vlan1
+ ip address 10.0.0.3 255.255.255.0
+!
+interface Vlan10
+ no ip address
+ ip access-group DS-FMS in
+!
+interface Vlan20
+ ip address 10.26.87.4 255.255.255.0
+!
+interface Vlan30
+ no ip address
+!
+interface Vlan40
+ no ip address
+!
+interface Vlan50
+ no ip address
+ ip access-group DS-FMS in
+!
+interface Vlan60
+ no ip address
+ ip access-group DS-FMS in
+!
+interface Vlan100
+ ip address 10.0.100.3 255.255.255.0
+!
+ip classless
+ip route 0.0.0.0 0.0.0.0 10.0.100.1
+ip route 10.0.0.0 255.0.0.0 Null0
+ip http server
+ip http secure-server
+!
+!
+access-list 120 permit ip 10.26.87.0 0.0.0.255 host 10.0.100.5
+access-list 120 permit udp any eq bootpc any eq bootps
+access-list 120 permit icmp any any
+!
+snmp-server community 1234Five RO
+!
+vstack
+!
+line con 0
+ exec-timeout 0 0
+line vty 0 4
+ password 1234Five
+ login
+line vty 5 15
+ password 1234Five
+ login
+!
+end
+

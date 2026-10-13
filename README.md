@@ -50,9 +50,9 @@ shows is saved in `logs\`.
 
 Red and blue stations are side by side. Typing a team number (digits only) fills in the password from the database if
 that team has one; otherwise a blank password uses the default WPA key from settings, shown greyed out. Apply sends all
-six stations to the access point and saves any new passwords to the teams. In the background it reconfigures the switch,
-and the SCC ports if SCC management is on, for only the stations whose team changed, so driver stations at the other
-stations stay connected. The stock VH-113 firmware still restarts Wi-Fi on every station whenever it's configured, so
+six stations to the access point and saves any new passwords to the teams. In the background it reads the switch's
+running config and reconfigures the switch, and the SCC ports if SCC management is on, for only the stations whose VLAN
+doesn't match their team, so driver stations at the other stations stay connected. The stock VH-113 firmware still restarts Wi-Fi on every station whenever it's configured, so
 robots at unchanged stations reconnect anyway, unless its radio API is patched (see [Windows setup](#windows-setup)).
 Edited stations turn amber until applied, and the undo button next to the warning puts everything back to what's
 applied.
@@ -60,9 +60,8 @@ Radio link and connection quality come from the access point. The AP and switch 
 with details on hover.
 
 The applied stations are saved, and on restart the access point is only reconfigured if it no longer matches them, so
-restarting the app doesn't kick robots off. The app can't read back what the switch has, though, so the first apply
-after a restart, after a failed switch configuration or after changing the switch's address or password redoes every
-station's VLAN and SCC port.
+restarting the app doesn't kick robots off. The switch only keeps its saved startup config across a power cycle, and
+the app never saves to it, so after the switch reboots, applying again puts back whatever stations it lost.
 
 ## FMS mode
 

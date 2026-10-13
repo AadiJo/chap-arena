@@ -1,17 +1,21 @@
 // End-to-end test of reconfiguring the wired network: the real HTTP API and field controller against a fake switch that
-// speaks Telnet and fake red and blue SCCs that speak SSH. Applying should only touch the stations whose team changed,
-// so driver stations at the other stations stay connected. Writes every request and the commands each device received
-// to e2e-output/ethernet.txt for inspection.
+// speaks Telnet and keeps a running config like a Catalyst 3560, and fake red and blue SCCs that speak SSH. Applying
+// should only touch the stations whose VLAN on the switch doesn't match their team, so driver stations at the other
+// stations stay connected. Writes every request and the commands each device received to e2e-output/ethernet.txt for
+// inspection.
 //
 // What could go wrong, and the step that catches it:
-//   - The first apply after startup trusts a switch it hasn't configured and skips VLANs or ports (first apply).
+//   - The real switch's output isn't parsed right, so matching stations are redone or stale ones are skipped (first
+//     apply, against a capture from the field's 3560).
+//   - A pool saved by an older Chap Arena, without the FMS route, counts as matching because its gateway does (first
+//     apply).
 //   - Changing one station rewrites other VLANs or turns off other ports, on either SCC (R3 changes team).
 //   - SCC ports come back on before the switch is done, or go off after it starts (R3 changes team).
 //   - A WPA key change, which is Wi-Fi only, touches the switch or SCCs (key only).
 //   - Emptying a station leaves its old VLAN or adds an empty one (R3 emptied).
-//   - Saving unrelated settings forgets what the switch has, so the next apply rewrites everything (R3 emptied).
-//   - A failed switch configuration counts as done, leaving its stations unconfigured (switch fails).
-//   - Pointing at a different switch keeps what the old one had (switch password changes).
+//   - SCC ports get bounced while the switch can't be read (switch unreachable).
+//   - A switch that power-cycled and lost everything applied since it was saved is trusted to still have it (power
+//     cycle).
 
 package web
 
@@ -30,11 +34,13 @@ import (
 	"golang.org/x/crypto/ssh"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -75,40 +81,165 @@ func (hardware *hardwareLog) from(start int) []hardwareSession {
 	return append([]hardwareSession(nil), hardware.sessions[start:]...)
 }
 
-// Plays the field's Catalyst switch on the given port (0 for any free one). Lets anyone log in, records the lines
-// between "config terminal" and "end", and hangs up at the final "exit" like the real switch. Closing the returned
-// listener makes the switch unreachable.
-func startFakeSwitch(t *testing.T, hardware *hardwareLog, port int) net.Listener {
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+// Plays the field's Catalyst 3560 over Telnet. Lets anyone log in, keeps the team VLAN interfaces' addresses and DHCP
+// pools, applies the config commands it's sent, and answers "show running-config" the way the real switch prints it.
+// It starts as the field's real 3560 just after it powered on (testdata/c3560_running_config_after_power_on.txt, which
+// has team 2687 saved on VLAN 20 by an older Chap Arena) and answers with that capture verbatim until it's sent a
+// config command. Each config session's lines are recorded in hardware; reads aren't. stop makes it unreachable, start
+// brings it back as it was, and powerCycle puts it back to its startup config, losing everything applied since.
+type fakeSwitch struct {
+	t        *testing.T
+	hardware *hardwareLog
+	port     int
+	listener net.Listener
+	startup  string
+
+	mutex    sync.Mutex
+	verbatim bool             // Still answering with startup as captured.
+	gateways map[int]string   // Address on each VLAN interface that has one, e.g. "10.2.54.4 255.255.255.0".
+	pools    map[int][]string // Lines of each DHCP pool named dhcp<vlan>, as entered.
+}
+
+func newFakeSwitch(t *testing.T, hardware *hardwareLog) *fakeSwitch {
+	startup, err := os.ReadFile(filepath.Join("testdata", "c3560_running_config_after_power_on.txt"))
 	require.Nil(t, err)
+	sw := &fakeSwitch{t: t, hardware: hardware, startup: string(startup)}
+	sw.powerCycle()
+	sw.start()
+	t.Cleanup(sw.stop)
+	return sw
+}
+
+func (sw *fakeSwitch) powerCycle() {
+	sw.mutex.Lock()
+	defer sw.mutex.Unlock()
+	sw.verbatim, sw.gateways, sw.pools = true, map[int]string{}, map[int][]string{}
+	sw.apply(strings.Split(sw.startup, "\n"))
+}
+
+// Listens on the switch's port, or on a free one the first time.
+func (sw *fakeSwitch) start() {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", sw.port))
+	require.Nil(sw.t, err)
+	sw.listener, sw.port = listener, listener.Addr().(*net.TCPAddr).Port
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
-				defer conn.Close()
-				var commands []string
-				inConfig := false
-				scanner := bufio.NewScanner(conn)
-				for scanner.Scan() {
-					switch line := scanner.Text(); {
-					case line == "config terminal":
-						inConfig = true
-					case line == "end":
-						inConfig = false
-					case inConfig:
-						commands = append(commands, line)
-					case line == "exit":
-						hardware.add("switch", commands)
-						return
-					}
-				}
-			}()
+			go sw.serve(conn)
 		}
 	}()
-	return listener
+}
+
+func (sw *fakeSwitch) stop() { _ = sw.listener.Close() }
+
+// One Telnet session. Everything Chap Arena sends arrives as lines, the config ones between "config terminal" and
+// "end", and the session ends at the final "exit" like on the real switch.
+func (sw *fakeSwitch) serve(conn net.Conn) {
+	defer conn.Close()
+	var commands []string
+	inConfig := false
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		switch line := scanner.Text(); {
+		case line == "config terminal":
+			inConfig = true
+		case line == "end":
+			inConfig = false
+		case inConfig:
+			commands = append(commands, line)
+		case line == "show running-config":
+			_, _ = conn.Write([]byte(strings.ReplaceAll(sw.runningConfig(), "\n", "\r\n")))
+		case line == "exit":
+			if len(commands) > 0 {
+				sw.mutex.Lock()
+				sw.apply(commands)
+				sw.verbatim = false
+				sw.mutex.Unlock()
+				sw.hardware.add("switch", commands)
+			}
+			return
+		}
+	}
+}
+
+// Applies config lines the way IOS does as far as team VLANs go: "interface VlanN" and "ip dhcp pool dhcpN" enter a
+// submode, the lines after them that belong to it configure it, and "!" or any other command leaves it. Indentation
+// from a printed config is ignored. Caller must hold the mutex.
+func (sw *fakeSwitch) apply(lines []string) {
+	scan := func(line, format string, n *int) bool {
+		count, err := fmt.Sscanf(line, format, n)
+		return err == nil && count == 1
+	}
+	isPoolCommand := func(line string) bool {
+		return slices.ContainsFunc(
+			[]string{"network ", "default-router ", "option ", "lease ", "domain-name ", "dns-server "},
+			func(prefix string) bool { return strings.HasPrefix(line, prefix) },
+		)
+	}
+	mode, vlan := "", 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		var n int
+		switch {
+		case scan(line, "interface Vlan%d", &n):
+			mode, vlan = "interface", n
+		case scan(line, "ip dhcp pool dhcp%d", &n):
+			mode, vlan = "pool", n
+			if sw.pools[n] == nil {
+				sw.pools[n] = []string{}
+			}
+		case scan(line, "no ip dhcp pool dhcp%d", &n):
+			delete(sw.pools, n)
+			mode = ""
+		case mode == "interface" && strings.HasPrefix(line, "ip address "):
+			sw.gateways[vlan] = strings.TrimPrefix(line, "ip address ")
+		case mode == "interface" && line == "no ip address":
+			delete(sw.gateways, vlan)
+		case mode == "pool" && isPoolCommand(line):
+			sw.pools[vlan] = append(sw.pools[vlan], line)
+		case mode == "interface" && strings.HasPrefix(line, "ip access-group "):
+			// Another setting on the interface.
+		default:
+			mode = ""
+		}
+	}
+}
+
+// What "show running-config" prints: the power-on capture until something's been configured, then the team VLANs'
+// pools and interfaces formatted like the capture (pool lines indented three spaces, a space after default-router's
+// address).
+func (sw *fakeSwitch) runningConfig() string {
+	sw.mutex.Lock()
+	defer sw.mutex.Unlock()
+	if sw.verbatim {
+		return sw.startup
+	}
+	var config strings.Builder
+	config.WriteString("Building configuration...\n\nCurrent configuration : 8588 bytes\n!\n")
+	for _, vlan := range slices.Sorted(maps.Keys(sw.pools)) {
+		fmt.Fprintf(&config, "ip dhcp pool dhcp%d\n", vlan)
+		for _, line := range sw.pools[vlan] {
+			if strings.HasPrefix(line, "default-router ") {
+				line += " "
+			}
+			fmt.Fprintf(&config, "   %s\n", line)
+		}
+		config.WriteString("!\n")
+	}
+	for _, vlan := range []int{1, 10, 20, 30, 40, 50, 60, 100} {
+		fmt.Fprintf(&config, "interface Vlan%d\n", vlan)
+		if gateway, ok := sw.gateways[vlan]; ok {
+			fmt.Fprintf(&config, " ip address %s\n", gateway)
+		} else {
+			config.WriteString(" no ip address\n")
+		}
+		config.WriteString("!\n")
+	}
+	config.WriteString("end\n")
+	return config.String()
 }
 
 // Plays an SCC over SSH on a free port and returns the port. Lets anyone log in and follows the CLI's modes:
@@ -195,9 +326,7 @@ func TestEthernetEndToEnd(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	hardware := &hardwareLog{}
-	switchListener := startFakeSwitch(t, hardware, 0)
-	t.Cleanup(func() { _ = switchListener.Close() })
-	switchPort := switchListener.Addr().(*net.TCPAddr).Port
+	fakeSwitch := newFakeSwitch(t, hardware)
 	redSCCPort := startFakeSCC(t, hardware, "red SCC")
 	blueSCCPort := startFakeSCC(t, hardware, "blue SCC")
 	apServer := httptest.NewServer(&fakeAccessPoint{})
@@ -211,7 +340,7 @@ func TestEthernetEndToEnd(t *testing.T) {
 			DriverStationPorts: field.DefaultDriverStationPorts,
 			RecordingsDir:      t.TempDir(),
 			Switch: network.SwitchOptions{
-				Port: switchPort, PauseDuration: time.Millisecond, BackoffDuration: time.Millisecond,
+				Port: fakeSwitch.port, PauseDuration: time.Millisecond, BackoffDuration: time.Millisecond,
 			},
 			RedSCCPort:  redSCCPort,
 			BlueSCCPort: blueSCCPort,
@@ -284,23 +413,6 @@ func TestEthernetEndToEnd(t *testing.T) {
 		}
 		return lines
 	}
-	allPortsOff := []hardwareSession{
-		sccPorts("red SCC", "shutdown", "1/2", "1/3", "1/4"), sccPorts("blue SCC", "shutdown", "1/2", "1/3", "1/4"),
-	}
-	allPortsOn := []hardwareSession{
-		sccPorts("red SCC", "no shutdown", "1/2", "1/3", "1/4"),
-		sccPorts("blue SCC", "no shutdown", "1/2", "1/3", "1/4"),
-	}
-	// Checks a full reconfiguration: every port off on both SCCs (in either order), every VLAN removed, the given VLANs
-	// added, then every port back on.
-	assertFullReconfiguration := func(sessions []hardwareSession, added []string) {
-		require.Len(t, sessions, 6)
-		assert.ElementsMatch(t, allPortsOff, sessions[0:2])
-		assert.Equal(t, removeVlans(10, 20, 30, 40, 50, 60), sessions[2])
-		assert.Equal(t, added, addedVlans(sessions[3]))
-		assert.ElementsMatch(t, allPortsOn, sessions[4:6])
-	}
-
 	// The SCC station ports start at their defaults; then everything is pointed at the fakes.
 	_, settings := call("GET", "/api/settings", nil)
 	assert.Equal(t, "gigabitEthernet 1/2", settings["SCCStation1Port"])
@@ -319,19 +431,27 @@ func TestEthernetEndToEnd(t *testing.T) {
 
 	empty := field.Assignment{}
 	team254 := field.Assignment{TeamId: 254, WpaKey: "key254ab"}
+	team2687 := field.Assignment{TeamId: 2687, WpaKey: "key2687a"}
 	sessions := apply(
-		"First apply: nothing is known about the switch yet, so every VLAN and port is redone",
-		[6]field.Assignment{team254, empty, {TeamId: 1678, WpaKey: "key1678a"}, empty, empty, empty}, 6,
+		"First apply, against the field switch as it powered on: R2's team 2687 is saved there, but its pool has no FMS "+
+			"route, so R2 is redone with R1 and R3; the empty blue VLANs already match and blue's SCC isn't contacted",
+		[6]field.Assignment{team254, team2687, {TeamId: 1678, WpaKey: "key1678a"}, empty, empty, empty}, 4,
 	)
-	assertFullReconfiguration(
-		sessions,
-		[]string{"interface Vlan10", "ip address 10.2.54.4 255.255.255.0", "interface Vlan30",
-			"ip address 10.16.78.4 255.255.255.0"},
+	require.Len(t, sessions, 4)
+	assert.Equal(t, sccPorts("red SCC", "shutdown", "1/2", "1/3", "1/4"), sessions[0])
+	assert.Equal(t, removeVlans(10, 20, 30), sessions[1])
+	assert.Equal(
+		t,
+		[]string{"interface Vlan10", "ip address 10.2.54.4 255.255.255.0", "interface Vlan20",
+			"ip address 10.26.87.4 255.255.255.0", "interface Vlan30", "ip address 10.16.78.4 255.255.255.0"},
+		addedVlans(sessions[2]),
 	)
+	assert.Contains(t, sessions[2].commands, "option 121 hex 180a.0064.0a1a.5704")
+	assert.Equal(t, sccPorts("red SCC", "no shutdown", "1/2", "1/3", "1/4"), sessions[3])
 
 	sessions = apply(
 		"R3 changes team: only R3's VLAN and red SCC port are touched, with the port off around the switch change",
-		[6]field.Assignment{team254, empty, {TeamId: 2056, WpaKey: "key2056a"}, empty, empty, empty}, 4,
+		[6]field.Assignment{team254, team2687, {TeamId: 2056, WpaKey: "key2056a"}, empty, empty, empty}, 4,
 	)
 	require.Len(t, sessions, 4)
 	assert.Equal(t, sccPorts("red SCC", "shutdown", "1/4"), sessions[0])
@@ -340,10 +460,11 @@ func TestEthernetEndToEnd(t *testing.T) {
 	assert.Equal(t, sccPorts("red SCC", "no shutdown", "1/4"), sessions[3])
 
 	note("\n== Key only: R1's WPA key changes, which is Wi-Fi only, so nothing wired is touched")
+	team254 = field.Assignment{TeamId: 254, WpaKey: "newkey254"}
 	start := hardware.count()
 	status, _ = call(
 		"PUT", "/api/stations",
-		[6]field.Assignment{{TeamId: 254, WpaKey: "newkey254"}, empty, {TeamId: 2056, WpaKey: "key2056a"}, empty, empty, empty},
+		[6]field.Assignment{team254, team2687, {TeamId: 2056, WpaKey: "key2056a"}, empty, empty, empty},
 	)
 	require.Equal(t, 200, status)
 	require.Eventually(
@@ -352,14 +473,9 @@ func TestEthernetEndToEnd(t *testing.T) {
 	)
 	assert.Equal(t, start, hardware.count())
 
-	settings["RecordingFormat"] = "csv"
-	note("\n== Unrelated settings saved")
-	status, _ = call("PUT", "/api/settings", settings)
-	require.Equal(t, 200, status)
-	team254 = field.Assignment{TeamId: 254, WpaKey: "newkey254"}
 	sessions = apply(
-		"R3 emptied: the switch still knows the other stations after the save, and R3's VLAN is removed with none added",
-		[6]field.Assignment{team254, empty, empty, empty, empty, empty}, 3,
+		"R3 emptied: R3's VLAN is removed with none added",
+		[6]field.Assignment{team254, team2687, empty, empty, empty, empty}, 3,
 	)
 	assert.Equal(
 		t,
@@ -369,45 +485,45 @@ func TestEthernetEndToEnd(t *testing.T) {
 		sessions,
 	)
 
-	require.Nil(t, switchListener.Close())
+	note("\n== Switch unreachable: R2 changes team, but the switch can't be read, so no SCC port is touched")
+	fakeSwitch.stop()
 	team1114 := field.Assignment{TeamId: 1114, WpaKey: "simbotics"}
-	sessions = apply(
-		"Switch fails: it's unreachable while R2 is assigned, so R2's port goes off and back on with nothing between",
-		[6]field.Assignment{team254, team1114, empty, empty, empty, empty}, 2,
-	)
+	start = hardware.count()
+	status, _ = call("PUT", "/api/stations", [6]field.Assignment{team254, team1114, empty, empty, empty, empty})
+	require.Equal(t, 200, status)
 	require.Eventually(
-		t, func() bool { return logCount("Failed to configure team Ethernet") == 1 }, 5*time.Second, 5*time.Millisecond,
+		t, func() bool { return logCount("couldn't read the switch's configuration") == 1 }, 5*time.Second,
+		5*time.Millisecond,
 	)
+	assert.Equal(t, start, hardware.count())
+
+	fakeSwitch.start()
+	sessions = apply(
+		"Switch back: applying the same stations again redoes only R2, which the switch still has as 2687",
+		[6]field.Assignment{team254, team1114, empty, empty, empty, empty}, 4,
+	)
+	require.Len(t, sessions, 4)
+	assert.Equal(t, sccPorts("red SCC", "shutdown", "1/3"), sessions[0])
+	assert.Equal(t, removeVlans(20), sessions[1])
+	assert.Equal(t, []string{"interface Vlan20", "ip address 10.11.14.4 255.255.255.0"}, addedVlans(sessions[2]))
+	assert.Equal(t, sccPorts("red SCC", "no shutdown", "1/3"), sessions[3])
+
+	note("\n== Power cycle: the switch reboots into its startup config and loses R1 and R2")
+	fakeSwitch.powerCycle()
+	sessions = apply(
+		"Same stations applied again: R1 and R2 are redone, R3 and blue already match the startup config",
+		[6]field.Assignment{team254, team1114, empty, empty, empty, empty}, 4,
+	)
+	require.Len(t, sessions, 4)
+	assert.Equal(t, sccPorts("red SCC", "shutdown", "1/2", "1/3"), sessions[0])
+	assert.Equal(t, removeVlans(10, 20), sessions[1])
 	assert.Equal(
 		t,
-		[]hardwareSession{sccPorts("red SCC", "shutdown", "1/3"), sccPorts("red SCC", "no shutdown", "1/3")},
-		sessions,
-	)
-
-	switchListener = startFakeSwitch(t, hardware, switchPort)
-	sessions = apply(
-		"Switch back: after a failure the switch's state is unknown, so the same assignment redoes everything",
-		[6]field.Assignment{team254, team1114, empty, empty, empty, empty}, 6,
-	)
-	assertFullReconfiguration(
-		sessions,
 		[]string{"interface Vlan10", "ip address 10.2.54.4 255.255.255.0", "interface Vlan20",
 			"ip address 10.11.14.4 255.255.255.0"},
+		addedVlans(sessions[2]),
 	)
-
-	settings["SwitchPassword"] = "sw2"
-	note("\n== Switch password changes")
-	status, _ = call("PUT", "/api/settings", settings)
-	require.Equal(t, 200, status)
-	sessions = apply(
-		"Same assignment on a newly configured switch: nothing is known about it, so everything is redone",
-		[6]field.Assignment{team254, team1114, empty, empty, empty, empty}, 6,
-	)
-	assertFullReconfiguration(
-		sessions,
-		[]string{"interface Vlan10", "ip address 10.2.54.4 255.255.255.0", "interface Vlan20",
-			"ip address 10.11.14.4 255.255.255.0"},
-	)
+	assert.Equal(t, sccPorts("red SCC", "no shutdown", "1/2", "1/3"), sessions[3])
 
 	note("\n== Log tail\n%s", strings.Join(logTail.Lines(), "\n"))
 }

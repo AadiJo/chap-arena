@@ -8,9 +8,14 @@ package network
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/Team254/cheesy-arena/model"
 	"net"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,11 +49,6 @@ type Switch struct {
 	configBackoffDuration time.Duration
 	configPauseDuration   time.Duration
 	Status                string
-
-	// Team on each station's VLAN (0 for none) as of the last successful configuration. Until one succeeds, and again
-	// after one fails, configured is false and the next configuration rewrites every VLAN.
-	configuredTeamIds [6]int
-	configured        bool
 }
 
 // Overrides for pointing a Switch at a fake in tests. Zero values mean the real switch's Telnet port and waits.
@@ -79,28 +79,45 @@ func NewSwitch(address, password string, options SwitchOptions) *Switch {
 	return sw
 }
 
-// Returns which stations' VLANs ConfigureTeamEthernet would rewrite for the given teams: those whose team changed since
-// the last successful configuration, or all six if there hasn't been one.
-func (sw *Switch) StationsToConfigure(teams [6]*model.Team) [6]bool {
+// Reads the switch's running config and returns which stations' VLANs don't match the given teams, which are the ones
+// ConfigureTeamEthernet needs to rewrite. It's read every time rather than remembered because the switch only keeps its
+// startup config across a reboot, so a switch that power-cycled has lost whatever was applied since it was last saved.
+func (sw *Switch) StationsToConfigure(teams [6]*model.Team) ([6]bool, error) {
 	sw.mutex.Lock()
 	defer sw.mutex.Unlock()
-	return sw.stationsToConfigure(teams)
+	var stations [6]bool
+	output, err := sw.runCommand("show running-config\n")
+	if err != nil {
+		sw.Status = "ERROR"
+		return stations, err
+	}
+	current, ok := parseTeamVlans(output)
+	if !ok {
+		sw.Status = "ERROR"
+		return stations, errors.New("its running config has no team VLAN interfaces; check the switch password")
+	}
+	for i, team := range teams {
+		stations[i] = !teamVlanFor(team).matches(current[i])
+	}
+	if stations == [6]bool{} {
+		sw.Status = "ACTIVE"
+	}
+	return stations, nil
 }
 
-// Sets up wired networks for the given set of teams. Only the VLANs of stations returned by StationsToConfigure are
-// rewritten, so driver stations at the other stations keep their gateway. Does nothing if no station changed.
-func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
+// Sets up wired networks for the given set of teams, rewriting only the VLANs of the given stations (see
+// StationsToConfigure), so driver stations at the other stations keep their gateway. Does nothing if no station is
+// given.
+func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team, stations [6]bool) error {
 	// Make sure multiple configurations aren't being set at the same time.
 	sw.mutex.Lock()
 	defer sw.mutex.Unlock()
-	stations := sw.stationsToConfigure(teams)
 	if stations == [6]bool{} {
 		return nil
 	}
 	sw.Status = "CONFIGURING"
-	sw.configured = false
 
-	// Remove the changed stations' old team VLANs.
+	// Remove the stations' old team VLANs.
 	removeTeamVlansCommand := ""
 	for i, vlan := range teamVlans {
 		if stations[i] {
@@ -116,46 +133,20 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 	}
 	time.Sleep(sw.configPauseDuration)
 
-	// Create the new team VLANs. Each pool also hands out a route to the FMS subnet (10.0.100.0/24) through the team's
-	// gateway, as DHCP options 121 and 249 (Microsoft's older code for the same thing). A driver station also on Wi-Fi
-	// would otherwise send FMS traffic out its Wi-Fi default route; the more specific route wins over any default.
-	// The value is the prefix length (0x18 = 24), the prefix's significant octets (10.0.100) and then the gateway.
+	// Create the new team VLANs.
 	addTeamVlansCommand := ""
-	addTeamVlan := func(team *model.Team, vlan int) {
-		if team == nil {
-			return
-		}
-		teamPartialIp := fmt.Sprintf("%d.%d", team.Id/100, team.Id%100)
-		fmsRoute := fmt.Sprintf("180a.0064.0a%02x.%02x%02x", team.Id/100, team.Id%100, switchTeamGatewayAddress)
-		addTeamVlansCommand += fmt.Sprintf(
-			"ip dhcp excluded-address 10.%s.1 10.%s.19\n"+
-				"ip dhcp excluded-address 10.%s.200 10.%s.254\n"+
-				"ip dhcp pool dhcp%d\n"+
-				"network 10.%s.0 255.255.255.0\n"+
-				"default-router 10.%s.%d\n"+
-				"option 121 hex %s\n"+
-				"option 249 hex %s\n"+
-				"lease 7\n"+
-				"interface Vlan%d\nip address 10.%s.%d 255.255.255.0\n",
-			teamPartialIp,
-			teamPartialIp,
-			teamPartialIp,
-			teamPartialIp,
-			vlan,
-			teamPartialIp,
-			teamPartialIp,
-			switchTeamGatewayAddress,
-			fmsRoute,
-			fmsRoute,
-			vlan,
-			teamPartialIp,
-			switchTeamGatewayAddress,
-		)
-	}
 	for i, vlan := range teamVlans {
-		if stations[i] {
-			addTeamVlan(teams[i], vlan)
+		team := teams[i]
+		if !stations[i] || team == nil {
+			continue
 		}
+		teamPartialIp := fmt.Sprintf("10.%d.%d", team.Id/100, team.Id%100)
+		config := teamVlanFor(team)
+		addTeamVlansCommand += fmt.Sprintf(
+			"ip dhcp excluded-address %[1]s.1 %[1]s.19\nip dhcp excluded-address %[1]s.200 %[1]s.254\n"+
+				"ip dhcp pool dhcp%[2]d\n%[3]s\ninterface Vlan%[2]d\nip address %[4]s\n",
+			teamPartialIp, vlan, strings.Join(config.poolLines, "\n"), config.gateway,
+		)
 	}
 	if len(addTeamVlansCommand) > 0 {
 		_, err = sw.runConfigCommand(addTeamVlansCommand)
@@ -168,30 +159,107 @@ func (sw *Switch) ConfigureTeamEthernet(teams [6]*model.Team) error {
 	// Give some time for the configuration to take before another one can be attempted.
 	time.Sleep(sw.configBackoffDuration)
 
-	sw.configuredTeamIds = teamIds(teams)
-	sw.configured = true
 	sw.Status = "ACTIVE"
 	return nil
 }
 
-// Caller must hold the mutex.
-func (sw *Switch) stationsToConfigure(teams [6]*model.Team) [6]bool {
-	var stations [6]bool
-	ids := teamIds(teams)
-	for i := range stations {
-		stations[i] = !sw.configured || sw.configuredTeamIds[i] != ids[i]
-	}
-	return stations
+// A team VLAN as the switch's running config has it: the address on its interface, e.g. "10.2.54.4 255.255.255.0" (""
+// for none), and the lines of its DHCP pool (nil for no pool). The DHCP excluded addresses aren't included; they're
+// global, and adding them again is harmless.
+type teamVlanConfig struct {
+	gateway   string
+	poolLines []string
 }
 
-func teamIds(teams [6]*model.Team) [6]int {
-	var ids [6]int
-	for i, team := range teams {
-		if team != nil {
-			ids[i] = team.Id
+// What a station's VLAN should be for the given team, or for an empty station if it's nil. The pool also hands out a
+// route to the FMS subnet (10.0.100.0/24) through the team's gateway, as DHCP options 121 and 249 (Microsoft's older code
+// for the same thing). A driver station also on Wi-Fi would otherwise send FMS traffic out its Wi-Fi default route; the
+// more specific route wins over any default. The value is the prefix length (0x18 = 24), the prefix's significant
+// octets (10.0.100) and then the gateway.
+func teamVlanFor(team *model.Team) teamVlanConfig {
+	if team == nil {
+		return teamVlanConfig{}
+	}
+	gateway := fmt.Sprintf("10.%d.%d.%d", team.Id/100, team.Id%100, switchTeamGatewayAddress)
+	fmsRoute := fmt.Sprintf("180a.0064.0a%02x.%02x%02x", team.Id/100, team.Id%100, switchTeamGatewayAddress)
+	return teamVlanConfig{
+		gateway: gateway + " 255.255.255.0",
+		poolLines: []string{
+			fmt.Sprintf("network 10.%d.%d.0 255.255.255.0", team.Id/100, team.Id%100),
+			"default-router " + gateway,
+			"option 121 hex " + fmsRoute,
+			"option 249 hex " + fmsRoute,
+			"lease 7",
+		},
+	}
+}
+
+// Whether the switch's config for a VLAN is the same as config, ignoring the order and case of the pool's lines.
+func (config teamVlanConfig) matches(current teamVlanConfig) bool {
+	if config.gateway != current.gateway || (config.poolLines == nil) != (current.poolLines == nil) {
+		return false
+	}
+	normalize := func(lines []string) []string {
+		normalized := make([]string, len(lines))
+		for i, line := range lines {
+			normalized[i] = strings.ToLower(line)
+		}
+		slices.Sort(normalized)
+		return normalized
+	}
+	return slices.Equal(normalize(config.poolLines), normalize(current.poolLines))
+}
+
+var (
+	vlanInterfaceRe = regexp.MustCompile(`^interface Vlan(\d+)$`)
+	dhcpPoolRe      = regexp.MustCompile(`^ip dhcp pool dhcp(\d+)$`)
+)
+
+// Reads each station's VLAN from the output of "show running-config", which IOS prints with a section's lines indented
+// under it:
+//
+//	ip dhcp pool dhcp20
+//	   network 10.26.87.0 255.255.255.0
+//	   default-router 10.26.87.4
+//	interface Vlan20
+//	 ip address 10.26.87.4 255.255.255.0
+//
+// ok is false if any team VLAN's interface is missing, which means the output isn't this switch's running config (for
+// example because logging in failed).
+func parseTeamVlans(output string) (vlans [6]teamVlanConfig, ok bool) {
+	station := map[string]int{}
+	for i, vlan := range teamVlans {
+		station[strconv.Itoa(vlan)] = i
+	}
+	var found [6]bool
+	current, inPool := -1, false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r ")
+		if !strings.HasPrefix(line, " ") {
+			current = -1
+			if match := vlanInterfaceRe.FindStringSubmatch(line); match != nil {
+				if i, isTeamVlan := station[match[1]]; isTeamVlan {
+					current, inPool, found[i] = i, false, true
+				}
+			} else if match := dhcpPoolRe.FindStringSubmatch(line); match != nil {
+				if i, isTeamVlan := station[match[1]]; isTeamVlan {
+					current, inPool = i, true
+					vlans[i].poolLines = []string{}
+				}
+			}
+			continue
+		}
+		if current < 0 {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if inPool {
+			vlans[current].poolLines = append(vlans[current].poolLines, line)
+		} else if gateway, isAddress := strings.CutPrefix(line, "ip address "); isAddress {
+			vlans[current].gateway = gateway
 		}
 	}
-	return ids
+	return vlans, found == [6]bool{true, true, true, true, true, true}
 }
 
 // Logs into the switch via Telnet and runs the given command in user exec mode. Reads the output and

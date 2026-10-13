@@ -353,19 +353,15 @@ func (field *Field) Status() Status {
 	return status
 }
 
-// Rebuilds the hardware clients from the given settings. The switch is kept, along with what it knows it has
-// configured, unless its address or password changed. Caller must hold the mutex (or be constructing the field).
+// Rebuilds the hardware clients from the given settings. Caller must hold the mutex (or be constructing the field).
 func (field *Field) loadSettings(settings model.EventSettings) {
-	if field.networkSwitch == nil || settings.SwitchAddress != field.settings.SwitchAddress ||
-		settings.SwitchPassword != field.settings.SwitchPassword {
-		field.networkSwitch = network.NewSwitch(settings.SwitchAddress, settings.SwitchPassword, field.options.Switch)
-	}
 	field.settings = settings
 	wifiStatuses := [6]*network.TeamWifiStatus{}
 	for i := range field.wifiStatuses {
 		wifiStatuses[i] = &field.wifiStatuses[i]
 	}
 	field.accessPoint.SetSettings(settings.ApAddress, settings.ApPassword, settings.ApChannel, wifiStatuses)
+	field.networkSwitch = network.NewSwitch(settings.SwitchAddress, settings.SwitchPassword, field.options.Switch)
 	stationPorts := [3]string{settings.SCCStation1Port, settings.SCCStation2Port, settings.SCCStation3Port}
 	field.redSCC = network.NewSCCSwitch(
 		settings.RedSCCAddress, field.options.RedSCCPort, settings.SCCUsername, settings.SCCPassword, stationPorts,
@@ -416,9 +412,10 @@ func (field *Field) teams() [6]*model.Team {
 }
 
 // Reconfigures the switch VLANs for the current assignment, turning off the SCC ports of the same stations while it
-// does so. Only stations whose team changed since the switch was last configured are touched, so driver stations at
-// the others stay connected; a key-only change touches nothing. Waits for any in-progress switch configuration first,
-// then reads the latest assignment so a quick second apply isn't overwritten.
+// does so. Only stations whose VLAN on the switch doesn't match their team are touched, so driver stations at the others
+// stay connected and a key-only change touches nothing; the switch's running config is read each time, so a switch
+// that rebooted and lost unsaved changes is fixed too. Waits for any in-progress switch configuration first, then reads
+// the latest assignment so a quick second apply isn't overwritten.
 func (field *Field) configureEthernet() {
 	field.switchMutex.Lock()
 	defer field.switchMutex.Unlock()
@@ -430,7 +427,11 @@ func (field *Field) configureEthernet() {
 	redSCC, blueSCC := field.redSCC, field.blueSCC
 	field.mutex.Unlock()
 
-	stations := networkSwitch.StationsToConfigure(teams)
+	stations, err := networkSwitch.StationsToConfigure(teams)
+	if err != nil {
+		log.Printf("Failed to configure team Ethernet: couldn't read the switch's configuration: %v", err)
+		return
+	}
 	if stations == [6]bool{} {
 		log.Printf("Switch already configured for stations %s", describeTeams(teams))
 		return
@@ -438,7 +439,7 @@ func (field *Field) configureEthernet() {
 	if sccEnabled {
 		setSCCStationPortsEnabled(redSCC, blueSCC, stations, false)
 	}
-	if err := networkSwitch.ConfigureTeamEthernet(teams); err != nil {
+	if err := networkSwitch.ConfigureTeamEthernet(teams, stations); err != nil {
 		log.Printf("Failed to configure team Ethernet: %v", err)
 	} else {
 		log.Printf("Switch configured for stations %s (changed %s)", describeTeams(teams), describeStations(stations))

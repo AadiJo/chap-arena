@@ -837,8 +837,8 @@ try {
         Warn 'still shows whether the wired side (switch and SCCs) left R1 alone.'
     }
     Step "Open Chap Arena ($($script:Arena.Url)), assign R1 and R3, and click Apply once."
-    Note 'The first apply after Chap Arena starts redoes every station, which is expected.'
-    Note 'Do it before R1 starts driving, so the real test starts from a known switch.'
+    Note 'That apply sets up every station the switch doesn''t already match. Do it before R1'
+    Note 'starts driving, so the real test starts from a switch that matches.'
     Start-Process $script:Arena.Url
     Pause-Wizard 'Press Enter once that apply is done'
     Step 'Link R1''s robot and start driving it.'

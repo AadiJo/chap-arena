@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// Each case is a switch's first configuration, which rewrites every VLAN. Later configurations only rewrite the VLANs of
-// stations whose team changed; web/ethernet_e2e_test.go covers those.
+// Each case rewrites every station's VLAN. web/ethernet_e2e_test.go covers working out which stations need it from the
+// switch's running config.
 func TestConfigureSwitch(t *testing.T) {
 	newSwitch := func(port int) *Switch {
 		return NewSwitch(
@@ -22,6 +22,7 @@ func TestConfigureSwitch(t *testing.T) {
 			SwitchOptions{Port: port, PauseDuration: time.Millisecond, BackoffDuration: time.Millisecond},
 		)
 	}
+	allStations := [6]bool{true, true, true, true, true, true}
 	sw := newSwitch(9050)
 	assert.Equal(t, "UNKNOWN", sw.Status)
 	var command1, command2 string
@@ -36,7 +37,7 @@ func TestConfigureSwitch(t *testing.T) {
 
 	// Should remove all previous VLANs and do nothing else if current configuration is blank.
 	mockTelnet(t, sw.port, &command1, &command2)
-	assert.Nil(t, sw.ConfigureTeamEthernet([6]*model.Team{nil, nil, nil, nil, nil, nil}))
+	assert.Nil(t, sw.ConfigureTeamEthernet([6]*model.Team{nil, nil, nil, nil, nil, nil}, allStations))
 	assert.Equal(t, expectedResetCommand, command1)
 	assert.Equal(t, "", command2)
 	assert.Equal(t, "ACTIVE", sw.Status)
@@ -44,7 +45,7 @@ func TestConfigureSwitch(t *testing.T) {
 	// Should configure one team if only one is present.
 	sw = newSwitch(9051)
 	mockTelnet(t, sw.port, &command1, &command2)
-	assert.Nil(t, sw.ConfigureTeamEthernet([6]*model.Team{nil, nil, nil, nil, {Id: 254}, nil}))
+	assert.Nil(t, sw.ConfigureTeamEthernet([6]*model.Team{nil, nil, nil, nil, {Id: 254}, nil}, allStations))
 	assert.Equal(t, expectedResetCommand, command1)
 	assert.Equal(
 		t,
@@ -62,7 +63,9 @@ func TestConfigureSwitch(t *testing.T) {
 	mockTelnet(t, sw.port, &command1, &command2)
 	assert.Nil(
 		t,
-		sw.ConfigureTeamEthernet([6]*model.Team{{Id: 1114}, {Id: 254}, {Id: 296}, {Id: 1503}, {Id: 1678}, {Id: 1538}}),
+		sw.ConfigureTeamEthernet(
+			[6]*model.Team{{Id: 1114}, {Id: 254}, {Id: 296}, {Id: 1503}, {Id: 1678}, {Id: 1538}}, allStations,
+		),
 	)
 	assert.Equal(t, expectedResetCommand, command1)
 	assert.Equal(
